@@ -1,14 +1,14 @@
 import os
 import time
 import json
-from google import genai
+import google.generativeai as genai
 from PIL import Image
 
 class GeminiExtractor:
     def __init__(self, api_key: str):
-        self.client = genai.Client(api_key=api_key)
-        # 升級至官方最新的 SDK 與最新模型，解決舊版 404 找不到模型的問題
-        self.model_name = 'gemini-2.5-flash'
+        genai.configure(api_key=api_key)
+        # 退回穩定版 SDK，但使用 Pro 最新模型來避開 404 與套件衝突
+        self.model = genai.GenerativeModel('gemini-1.5-pro-latest')
         
     def _get_prompt(self):
         return """
@@ -51,10 +51,7 @@ class GeminiExtractor:
         """處理單張圖片 (如身分證 JPG/PNG)"""
         try:
             img = Image.open(image_path)
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[self._get_prompt(), img]
-            )
+            response = self.model.generate_content([self._get_prompt(), img])
             return self._parse_response(response.text)
         except Exception as e:
             return {"error": str(e)}
@@ -63,24 +60,20 @@ class GeminiExtractor:
         """處理 PDF 檔案 (如電子謄本或掃描謄本)"""
         try:
             # 上傳 PDF 到 Gemini API
-            uploaded_file = self.client.files.upload(file=pdf_path, config={'display_name': 'Document'})
+            uploaded_file = genai.upload_file(path=pdf_path, display_name="Document")
             
             # 等待檔案處理完畢
-            uploaded_file = self.client.files.get(name=uploaded_file.name)
             while uploaded_file.state.name == "PROCESSING":
                 time.sleep(2)
-                uploaded_file = self.client.files.get(name=uploaded_file.name)
+                uploaded_file = genai.get_file(uploaded_file.name)
                 
             if uploaded_file.state.name == "FAILED":
                 return {"error": "PDF 處理失敗，請確認檔案格式是否正確。"}
 
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[self._get_prompt(), uploaded_file]
-            )
+            response = self.model.generate_content([self._get_prompt(), uploaded_file])
             
             # 處理完畢後刪除檔案，保護隱私
-            self.client.files.delete(name=uploaded_file.name)
+            genai.delete_file(uploaded_file.name)
             
             return self._parse_response(response.text)
         except Exception as e:

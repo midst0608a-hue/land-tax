@@ -3,5 +3,5 @@ pdfplumber
 pandas
 openpyxl
 xlrd
-google-generativeai
+google-genai
 Pillow
