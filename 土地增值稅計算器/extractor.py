@@ -7,8 +7,8 @@ from PIL import Image
 class GeminiExtractor:
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        # 使用 Gemini 1.5 Flash，速度快且支援多模態 (圖片/PDF)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        # 改用 Gemini 1.5 Pro Latest，相容性更高且 OCR 能力更強
+        self.model = genai.GenerativeModel('gemini-1.5-pro-latest')
         
     def _get_prompt(self):
         return """
