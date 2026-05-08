@@ -1,14 +1,11 @@
 import os
-import time
 import json
-import google.generativeai as genai
-from PIL import Image
+import base64
+import requests
 
 class GeminiExtractor:
     def __init__(self, api_key: str):
-        genai.configure(api_key=api_key)
-        # 退回穩定版 SDK，但使用 Pro 最新模型來避開 404 與套件衝突
-        self.model = genai.GenerativeModel('gemini-1.5-pro-latest')
+        self.api_key = api_key
         
     def _get_prompt(self):
         return """
@@ -47,37 +44,76 @@ class GeminiExtractor:
         ]
         """
 
+    def _call_api(self, mime_type: str, file_data: bytes):
+        base64_data = base64.b64encode(file_data).decode('utf-8')
+        prompt = self._get_prompt()
+        
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": base64_data
+                        }
+                    }
+                ]
+            }]
+        }
+        
+        # 優先嘗試 gemini-1.5-flash
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+        response = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
+        
+        # 如果遇到 404 或出錯，自動降級/切換至 gemini-1.5-pro 旗艦版
+        if response.status_code != 200:
+            url_pro = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={self.api_key}"
+            response = requests.post(url_pro, headers={"Content-Type": "application/json"}, json=payload)
+            if response.status_code != 200:
+                return {"error": f"API 發生錯誤 ({response.status_code})：請確認 API Key 是否有效。詳細錯誤：{response.text}"}
+                
+        resp_data = response.json()
+        try:
+            text = resp_data['candidates'][0]['content']['parts'][0]['text']
+            return self._parse_response(text)
+        except Exception as e:
+            return {"error": "AI 回傳格式異常。", "raw": str(resp_data)}
+
     def process_image(self, image_path: str):
         """處理單張圖片 (如身分證 JPG/PNG)"""
         try:
-            img = Image.open(image_path)
-            response = self.model.generate_content([self._get_prompt(), img])
-            return self._parse_response(response.text)
+            with open(image_path, "rb") as f:
+                ext = image_path.split('.')[-1].lower()
+                mime = f"image/{ext}" if ext in ["png", "jpeg"] else "image/jpeg"
+                return self._call_api(mime, f.read())
         except Exception as e:
             return {"error": str(e)}
 
     def process_pdf(self, pdf_path: str):
         """處理 PDF 檔案 (如電子謄本或掃描謄本)"""
         try:
-            # 上傳 PDF 到 Gemini API
-            uploaded_file = genai.upload_file(path=pdf_path, display_name="Document")
-            
-            # 等待檔案處理完畢
-            while uploaded_file.state.name == "PROCESSING":
-                time.sleep(2)
-                uploaded_file = genai.get_file(uploaded_file.name)
-                
-            if uploaded_file.state.name == "FAILED":
-                return {"error": "PDF 處理失敗，請確認檔案格式是否正確。"}
-
-            response = self.model.generate_content([self._get_prompt(), uploaded_file])
-            
-            # 處理完畢後刪除檔案，保護隱私
-            genai.delete_file(uploaded_file.name)
-            
-            return self._parse_response(response.text)
+            with open(pdf_path, "rb") as f:
+                return self._call_api("application/pdf", f.read())
         except Exception as e:
             return {"error": str(e)}
+
+    def _parse_response(self, text: str):
+        """解析 Gemini 回傳的 JSON 文字"""
+        try:
+            clean_text = text.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text[7:]
+            if clean_text.startswith("```"):
+                clean_text = clean_text[3:]
+            if clean_text.endswith("```"):
+                clean_text = clean_text[:-3]
+                
+            clean_text = clean_text.strip()
+            data = json.loads(clean_text)
+            return {"success": True, "data": data}
+        except json.JSONDecodeError:
+            return {"error": "無法解析 AI 的回覆格式，請重新嘗試。", "raw": text}
 
     def _parse_response(self, text: str):
         """解析 Gemini 回傳的 JSON 文字"""
