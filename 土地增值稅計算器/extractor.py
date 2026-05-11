@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from google import genai
 from google.genai import types
 
@@ -16,12 +17,24 @@ class GeminiExtractor:
         1. 地號 (如果是土地謄本)
         2. 面積 (包含單位，如平方公尺)
         3. 持分 (權利範圍)
-        4. 現值 (當期申報地價或前次移轉現值)
+        4. 現值 (請明確抓取「公告土地現值」，請勿抓取「當期申報地價」)
         5. 所有權人 (姓名)
         6. 統一編號 (身分證字號或統編)
-        7. 前次移轉現值
-        8. 歷次取得範圍
+        7. 前次移轉現值 (必須包含年月與價格。如果同一個地號有多筆前次移轉紀錄，請分別列出，例如：「109年5月：13,000元／平方公尺；111年2月：15,000元／平方公尺」)
+        8. 歷次取得範圍 (若有多筆對應前次移轉的持分取得範圍，也請分別列出)
         9. 地址 (包含身分證上的戶籍地址或謄本上的住址)
+        
+        【特別指示：針對建物謄本】
+        如果這是一份「建物謄本」，除了抓取原有資訊外，請務必一併抓取「建物標示部」的內容。請確保自行在 JSON 內新增並包含以下欄位：
+        - 建號
+        - 門牌
+        - 主要用途
+        - 主要建材
+        - 建築完成日期
+        - 層次與面積 (請將各層次及其對應的面積詳細列出)
+        - 主建物總面積 (【重要計算邏輯】除明確標示為「附屬建物」外，其餘所有層次之面積必須全部加總，作為正確的主建物總面積)
+        - 附屬建物用途與面積 (若有標示為附屬建物，請務必同時抓取其「用途性質」與對應的「面積」，例如：「陽台：10.5平方公尺；雨遮：2.0平方公尺」。請獨立列出每一項附屬建物，切勿只給總和數字，也切勿計入主建物總面積)
+        請將這些建物標示部的資訊與所有權人等資訊「整合在同一個紀錄物件中」，確保內容完整不遺漏。
         
         如果一份文件中有多筆權利紀錄 (例如同一個地號有多個持分人)，請你把「每一筆紀錄」都當成一個獨立的物件。
         
@@ -37,7 +50,7 @@ class GeminiExtractor:
                 "現值": "4,160.0元／平方公尺",
                 "所有權人": "吳林桂花",
                 "統一編號": "N201807918",
-                "前次移轉現值": "13,000.0元／平方公尺",
+                "前次移轉現值": "109年5月：13,000.0元／平方公尺",
                 "歷次取得範圍": "10000分之384",
                 "地址": "台中市西屯區協和里..."
             }
@@ -56,18 +69,25 @@ class GeminiExtractor:
                 config={'mime_type': mime_type}
             )
             
-            # 優先嘗試 gemini-1.5-flash
+            # 等待檔案處理完成 (變成 ACTIVE 狀態)
+            while True:
+                file_info = client.files.get(name=uploaded_file.name)
+                state_str = str(file_info.state)
+                if "ACTIVE" in state_str:
+                    break
+                elif "FAILED" in state_str:
+                    return {"error": f"API 檔案處理失敗 (狀態: {state_str})，請嘗試換一個檔案。"}
+                time.sleep(2)
+            
+            # 直接使用 gemini-2.5-flash (因 1.5 版已退役)
             try:
                 response = client.models.generate_content(
-                    model='gemini-1.5-flash',
-                    contents=[uploaded_file, prompt]
+                    model='gemini-2.5-flash',
+                    contents=[file_info, prompt]
                 )
             except Exception as e_flash:
-                # 若發生錯誤，嘗試切換至 gemini-1.5-pro
-                response = client.models.generate_content(
-                    model='gemini-1.5-pro',
-                    contents=[uploaded_file, prompt]
-                )
+                # 不再盲目降級到 1.5-pro，直接回傳真實的錯誤訊息
+                return {"error": f"Gemini 2.5 Flash 生成內容時發生錯誤：{str(e_flash)}"}
                 
             return self._parse_response(response.text)
             
