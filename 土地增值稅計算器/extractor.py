@@ -1,7 +1,7 @@
 import os
 import json
-import base64
-import requests
+from google import genai
+from google.genai import types
 
 class GeminiExtractor:
     def __init__(self, api_key: str):
@@ -44,76 +44,52 @@ class GeminiExtractor:
         ]
         """
 
-    def _call_api(self, mime_type: str, file_data: bytes):
-        base64_data = base64.b64encode(file_data).decode('utf-8')
-        prompt = self._get_prompt()
-        
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "inlineData": {
-                            "mimeType": mime_type,
-                            "data": base64_data
-                        }
-                    }
-                ]
-            }]
-        }
-        
-        # 優先嘗試 gemini-1.5-flash
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
-        response = requests.post(url, headers={"Content-Type": "application/json"}, json=payload)
-        
-        # 如果遇到 404 或出錯，自動降級/切換至 gemini-1.5-pro 旗艦版
-        if response.status_code != 200:
-            url_pro = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={self.api_key}"
-            response = requests.post(url_pro, headers={"Content-Type": "application/json"}, json=payload)
-            if response.status_code != 200:
-                return {"error": f"API 發生錯誤 ({response.status_code})：請確認 API Key 是否有效。詳細錯誤：{response.text}"}
-                
-        resp_data = response.json()
+    def process_file(self, file_path: str, mime_type: str):
+        uploaded_file = None
         try:
-            text = resp_data['candidates'][0]['content']['parts'][0]['text']
-            return self._parse_response(text)
+            client = genai.Client(api_key=self.api_key)
+            prompt = self._get_prompt()
+            
+            # 使用 File API 上傳檔案
+            uploaded_file = client.files.upload(
+                file=file_path, 
+                config={'mime_type': mime_type}
+            )
+            
+            # 優先嘗試 gemini-1.5-flash
+            try:
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash',
+                    contents=[uploaded_file, prompt]
+                )
+            except Exception as e_flash:
+                # 若發生錯誤，嘗試切換至 gemini-1.5-pro
+                response = client.models.generate_content(
+                    model='gemini-1.5-pro',
+                    contents=[uploaded_file, prompt]
+                )
+                
+            return self._parse_response(response.text)
+            
         except Exception as e:
-            return {"error": "AI 回傳格式異常。", "raw": str(resp_data)}
+            return {"error": f"API 發生錯誤：請確認 API Key 是否有效。詳細錯誤：{str(e)}"}
+        finally:
+            # 清理：無論成功或失敗，都盡可能刪除雲端上的暫存檔案
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception:
+                    pass
 
     def process_image(self, image_path: str):
         """處理單張圖片 (如身分證 JPG/PNG)"""
-        try:
-            with open(image_path, "rb") as f:
-                ext = image_path.split('.')[-1].lower()
-                mime = f"image/{ext}" if ext in ["png", "jpeg"] else "image/jpeg"
-                return self._call_api(mime, f.read())
-        except Exception as e:
-            return {"error": str(e)}
+        ext = image_path.split('.')[-1].lower()
+        mime = f"image/{ext}" if ext in ["png", "jpeg"] else "image/jpeg"
+        return self.process_file(image_path, mime)
 
     def process_pdf(self, pdf_path: str):
         """處理 PDF 檔案 (如電子謄本或掃描謄本)"""
-        try:
-            with open(pdf_path, "rb") as f:
-                return self._call_api("application/pdf", f.read())
-        except Exception as e:
-            return {"error": str(e)}
-
-    def _parse_response(self, text: str):
-        """解析 Gemini 回傳的 JSON 文字"""
-        try:
-            clean_text = text.strip()
-            if clean_text.startswith("```json"):
-                clean_text = clean_text[7:]
-            if clean_text.startswith("```"):
-                clean_text = clean_text[3:]
-            if clean_text.endswith("```"):
-                clean_text = clean_text[:-3]
-                
-            clean_text = clean_text.strip()
-            data = json.loads(clean_text)
-            return {"success": True, "data": data}
-        except json.JSONDecodeError:
-            return {"error": "無法解析 AI 的回覆格式，請重新嘗試。", "raw": text}
+        return self.process_file(pdf_path, "application/pdf")
 
     def _parse_response(self, text: str):
         """解析 Gemini 回傳的 JSON 文字"""
