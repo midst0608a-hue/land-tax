@@ -1,4 +1,7 @@
 streamlit
-google-generativeai
-Pillow
+pdfplumber
 pandas
+openpyxl
+xlrd
+google-genai
+Pillow
