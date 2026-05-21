@@ -1,7 +1,4 @@
 streamlit
-pdfplumber
-pandas
-openpyxl
-xlrd
-google-genai
+google-generativeai
 Pillow
+pandas
