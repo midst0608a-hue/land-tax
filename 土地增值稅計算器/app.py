@@ -1,97 +1,54 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import os
-import tempfile
 from tax_engine import TaxEngine
 from pdf_parser import DataParser
+import os
+import tempfile
 from extractor import GeminiExtractor
 
 st.set_page_config(page_title="台灣不動產全能工作站", page_icon="🏦", layout="wide")
 
-# 套用精美的 CSS 樣式，增加質感
-st.markdown("""
-<style>
-    .reportview-container {
-        background: #f0f2f6;
-    }
-    .main footer {visibility: hidden;}
-    h1 {
-        color: #1E3A8A;
-        font-weight: 700;
-    }
-    h2 {
-        color: #2563EB;
-        font-weight: 600;
-    }
-    .stButton>button {
-        border-radius: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🏦 台灣不動產全能工作站")
-st.markdown("本系統整合了**土地登記謄本解析與土地增值稅批次試算**，以及**AI 智能謄本與身分證件資料萃取**兩大核心功能。")
 
 # 設定 API Key
 if "api_key" not in st.session_state:
-    # 優先從 Streamlit Secrets 讀取 (雲端部署推薦)
-    secrets_key = ""
-    try:
-        if "GEMINI_API_KEY" in st.secrets:
-            secrets_key = st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        pass
-    
-    # 次之從系統環境變數讀取
-    env_key = os.environ.get("GEMINI_API_KEY", "")
-    
-    st.session_state.api_key = secrets_key or env_key or ""
+    st.session_state.api_key = ""
 
 with st.sidebar:
     st.header("⚙️ 全域設定")
-    # 如果已經有偵測到 API Key (例如來自 Secrets 或環境變數)，在輸入框預設填入並提示
-    placeholder = "已從 Secrets 自動載入 API 金鑰" if st.session_state.api_key else "請輸入您的 Google Gemini API Key"
-    api_key_input = st.text_input(
-        "Google Gemini API Key", 
-        type="password", 
-        value=st.session_state.api_key,
-        placeholder=placeholder
-    )
+    api_key_input = st.text_input("請輸入 Google Gemini API Key", type="password", value=st.session_state.api_key)
     if api_key_input:
         st.session_state.api_key = api_key_input
         
     st.markdown("---")
     st.markdown("### 💡 如何取得 API Key？")
     st.markdown("1. 前往 [Google AI Studio](https://aistudio.google.com/)")
-    st.markdown("2. 登入您的 Google 帳號並建立 API key")
-    st.markdown("3. 將金鑰貼到上方（或設定於雲端 Secrets 中）")
+    st.markdown("2. 登入 Google 帳號並點擊 Get API key")
 
-tab1, tab2 = st.tabs(["🧮 土地增值稅試算", "📄 智能資料萃取"])
+tab1, tab2, tab3 = st.tabs(["🧮 土地增值稅試算", "📄 智能資料萃取", "🔍 智能案卷預審"])
 
-# ==========================================
-# 分頁一：土地增值稅試算
-# ==========================================
 with tab1:
-    st.markdown("上傳土地登記謄本 (PDF) 與物價指數表 (Excel)，系統將自動擷取所有土地並批次試算土地增值稅（會自動略過建物謄本）。")
+    st.markdown("上傳土地謄本 (PDF) 與物價指數表 (Excel)，系統將自動擷取所有土地並批次試算土地增值稅。 (自動略過建物謄本)")
     
     # 建立暫存資料夾
     if 'temp_dir' not in st.session_state:
         st.session_state.temp_dir = tempfile.mkdtemp()
 
+    # ==========================================
+    # 1. 檔案上傳與解析區
+    # ==========================================
     st.header("1. 檔案上傳區")
     col_up1, col_up2 = st.columns(2)
     with col_up1:
-        pdf_file = st.file_uploader("📄 上傳土地登記謄本 (PDF)", type=['pdf'], key="tax_pdf_uploader")
+        pdf_file = st.file_uploader("📄 上傳土地登記謄本 (PDF)", type=['pdf'])
     with col_up2:
-        excel_file = st.file_uploader("📊 上傳物價指數表 (Excel)", type=['xlsx', 'xls'], key="tax_excel_uploader")
+        excel_file = st.file_uploader("📊 上傳物價指數表 (Excel)", type=['xlsx', 'xls'])
     
-    if st.button("🔍 解析文件提取資料", type="primary", use_container_width=True):
+    if st.button("🔍 解析文件提取資料", type="primary"):
         if pdf_file is not None:
             with st.spinner("正在解析 PDF 內容..."):
-                # 解決非英文檔名問題：將 PDF 檔案命名為安全的英文暫存檔名
-                pdf_ext = pdf_file.name.split(".")[-1].lower()
-                pdf_path = os.path.join(st.session_state.temp_dir, f"temp_pdf.{pdf_ext}")
+                pdf_path = os.path.join(st.session_state.temp_dir, "temp.pdf")
                 with open(pdf_path, "wb") as f:
                     f.write(pdf_file.getbuffer())
                 
@@ -103,7 +60,7 @@ with tab1:
                 elif len(extracted_parcels) == 0:
                     st.warning("找不到任何土地謄本資料。請確認檔案格式或是否僅包含建物謄本。")
                 else:
-                    st.success(f"✅ 解析成功！共找到 {len(extracted_parcels)} 筆土地權利紀錄。")
+                    st.success(f"✅ 解析成功！共找到 {len(extracted_parcels)} 筆土地謄本。")
                     
                     # 初始化 DataFrame 結構
                     df_data = []
@@ -127,22 +84,21 @@ with tab1:
                     
                     # Debug 面板：讓使用者可以查看原始萃取出的文字
                     with st.expander("🛠️ (除錯用) 查看 PDF 轉出的原始文字"):
-                        st.write("這是從 PDF 中解析出的原始文字，供對照與排錯：")
+                        st.write("請將下方的文字截圖或複製給 AI，這樣 AI 就能知道文字到底是怎麼排列的！")
                         for p in extracted_parcels:
                             st.markdown(f"**{p['id']}**")
                             st.text(p["extracted_text"])
                     
-                    # 如果有上傳 Excel，使用安全的英文檔名儲存，避免 Pandas 在非英文路徑下報錯
+                    # 如果有上傳 Excel，一併處理
                     if excel_file is not None:
-                        excel_ext = excel_file.name.split(".")[-1].lower()
-                        excel_path = os.path.join(st.session_state.temp_dir, f"temp_excel.{excel_ext}")
+                        excel_path = os.path.join(st.session_state.temp_dir, excel_file.name)
                         with open(excel_path, "wb") as f:
                             f.write(excel_file.getbuffer())
                         st.session_state.excel_path = excel_path
                         st.info("已成功讀取物價指數 Excel 檔案。")
                     else:
                         st.session_state.excel_path = None
-                        st.warning("未上傳物價指數表，計算時預設物價指數將為 100% (無調整)")
+                        st.warning("未上傳物價指數表，計算時預設指數將為 100% (無調整)")
         else:
             st.error("請先上傳 PDF 檔案！")
     
@@ -158,8 +114,8 @@ with tab1:
         # 全局設定 (本次申報年月)
         col_cy, col_cm = st.columns(2)
         today = datetime.datetime.now()
-        curr_year = col_cy.number_input("本次申報 (民國年)", value=today.year - 1911, step=1, key="tax_curr_year")
-        curr_month = col_cm.number_input("本次申報 (月份)", value=today.month, min_value=1, max_value=12, step=1, key="tax_curr_month")
+        curr_year = col_cy.number_input("本次申報 (民國年)", value=today.year - 1911, step=1)
+        curr_month = col_cm.number_input("本次申報 (月份)", value=today.month, min_value=1, max_value=12, step=1)
         
         # 呈現資料編輯器
         edited_df = st.data_editor(
@@ -168,11 +124,10 @@ with tab1:
             use_container_width=True,
             column_config={
                 "自用住宅": st.column_config.CheckboxColumn("自用住宅 (10%)", default=False)
-            },
-            key="tax_data_editor"
+            }
         )
         
-        if st.button("🧮 執行批次稅額計算", type="primary", use_container_width=True, key="tax_calc_button"):
+        if st.button("🧮 執行批次稅額計算", type="primary", use_container_width=True):
             st.divider()
             st.header("3. 計算結果與明細")
             
@@ -259,27 +214,22 @@ with tab1:
                         st.write(f"👉 持有年限：**{steps.get('holding_years', 0)} 年**")
                         st.info(f"**最終稅額： {res['tax_payable']:,.0f} 元**")
 
-# ==========================================
-# 分頁二：智能資料萃取 (OCR)
-# ==========================================
 with tab2:
     st.header("📄 謄本與身分證自動萃取神器")
-    st.markdown("上傳紙本掃描圖檔、PDF、或身分證件，AI 將自動辨識所有權人、地址、統編、建號、公告現值等資訊並輸出純文字。")
+    st.markdown("上傳紙本掃描圖檔、PDF、或身分證件，AI 將自動辨識所有權人、地址、統編等資訊並輸出純文字。")
     
     if not st.session_state.api_key:
-        st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 或設定 Secrets 才能開啟此功能！")
+        st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
     else:
         uploaded_file2 = st.file_uploader("請上傳圖檔或 PDF", type=["pdf", "jpg", "jpeg", "png"], key="extractor_up")
         if uploaded_file2 is not None:
             if 'temp_dir' not in st.session_state:
                 st.session_state.temp_dir = tempfile.mkdtemp()
-                
-            # 解決非英文檔名問題：重新命名為安全檔名 extract_temp.{ext}，避免 Gemini API 上傳或讀取時編碼錯誤
-            file_ext = uploaded_file2.name.split(".")[-1].lower()
-            safe_filename = f"extract_temp.{file_ext}"
-            file_path = os.path.join(st.session_state.temp_dir, safe_filename)
+            file_path = os.path.join(st.session_state.temp_dir, "extract_" + uploaded_file2.name)
             with open(file_path, "wb") as f:
                 f.write(uploaded_file2.getbuffer())
+                
+            file_ext = uploaded_file2.name.split(".")[-1].lower()
             
             st.info("🤖 AI 正在努力閱讀並萃取資料中，請稍候 (約需 5~15 秒)...")
             extractor = GeminiExtractor(api_key=st.session_state.api_key)
@@ -307,13 +257,7 @@ with tab2:
                     formatted_text = ""
                     for i, record in enumerate(data_list):
                         formatted_text += f"【紀錄 {i+1}】\n"
-                        
-                        # 定義謄本/證件常見欄位顯示順序
-                        keys_order = [
-                            "地號", "建號", "門牌", "面積", "持分", "現值", "所有權人", "統一編號", "出生年月日",
-                            "主要用途", "主要建材", "建築完成日期", "層次與面積", 
-                            "主建物總面積", "附屬建物用途與面積", "前次移轉現值", "歷次取得範圍", "地址"
-                        ]
+                        keys_order = ["地號", "面積", "持分", "現值", "所有權人", "統一編號", "前次移轉現值", "歷次取得範圍", "地址"]
                         
                         for key in keys_order:
                             if key in record and record[key]:
@@ -327,4 +271,81 @@ with tab2:
                         
                     st.markdown("### 📋 萃取結果 (可直接複製)")
                     st.code(formatted_text.strip(), language="text")
-                    st.markdown("*(小提示：您可以直接點擊上方文字框右上角的「複製」按鈕)*")
+
+with tab3:
+    st.header("🔍 智能案卷預審 (AI Pre-Review)")
+    st.markdown("上傳要審核的公契、土地登記申請書等公文影像，輸入案件背景描述，AI 將自動與地政審查規範進行對照，分析填寫疏漏、文件完整度或欄位不一致的潛在風險。")
+    
+    if not st.session_state.api_key:
+        st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
+    else:
+        # 建立案件背景描述區
+        case_desc_input = st.text_area(
+            "📝 請輸入案件口語描述 (背景資訊)",
+            placeholder="例如：本案為夫妻贈與所有權移轉登記，先生（義務人）將大安區土地贈與給太太（權利人），由地政士代理送件。先生有欠繳地價稅已補繳，檢附補繳收據。",
+            height=150
+        )
+        
+        # 檢查是否有預設手冊並提示使用者
+        default_manual_name = "土地登記審查手冊.pdf"
+        default_manual_path = os.path.join(os.path.dirname(__file__), default_manual_name)
+        has_default_manual = os.path.exists(default_manual_path)
+        
+        if has_default_manual:
+            st.info(f"💡 系統偵測到預設手冊「{default_manual_name}」，若不另行上傳自訂手冊，將自動以此進行比對與預審。")
+        else:
+            st.warning(f"⚠️ 尚未偵測到預設審查手冊。您可以將「{default_manual_name}」放置於專案目錄下以供自動載入，或在下方直接上傳手冊。")
+
+        col_rev1, col_rev2 = st.columns(2)
+        with col_rev1:
+            uploaded_doc = st.file_uploader("📄 上傳要審查的文件 (公契/申請書/附件PDF或圖檔)", type=["pdf", "jpg", "jpeg", "png"], key="reviewer_doc")
+        with col_rev2:
+            uploaded_manual = st.file_uploader("📘 (選填) 上傳自訂審查手冊或指引 PDF", type=["pdf"], key="reviewer_manual")
+            
+        if st.button("🚀 開始智能預審", type="primary", use_container_width=True):
+            if not case_desc_input.strip():
+                st.error("請先輸入案件描述！")
+            elif uploaded_doc is None:
+                st.error("請先上傳要審查的文件！")
+            else:
+                if 'temp_dir' not in st.session_state:
+                    st.session_state.temp_dir = tempfile.mkdtemp()
+                    
+                # 儲存要審查的文件
+                doc_path = os.path.join(st.session_state.temp_dir, "review_doc_" + uploaded_doc.name)
+                with open(doc_path, "wb") as f:
+                    f.write(uploaded_doc.getbuffer())
+                
+                doc_ext = uploaded_doc.name.split(".")[-1].lower()
+                doc_mime = "application/pdf" if doc_ext == "pdf" else (f"image/{doc_ext}" if doc_ext in ["png", "jpeg"] else "image/jpeg")
+                
+                # 儲存審查手冊 (優先使用上傳的，其次使用預設的)
+                manual_path = None
+                manual_mime = None
+                if uploaded_manual is not None:
+                    manual_path = os.path.join(st.session_state.temp_dir, "review_manual_" + uploaded_manual.name)
+                    with open(manual_path, "wb") as f:
+                        f.write(uploaded_manual.getbuffer())
+                    manual_mime = "application/pdf"
+                elif has_default_manual:
+                    manual_path = default_manual_path
+                    manual_mime = "application/pdf"
+                
+                st.info("🤖 AI 正在比對公契與手冊中，可能需要 10~20 秒，請稍候...")
+                extractor = GeminiExtractor(api_key=st.session_state.api_key)
+                
+                with st.spinner("AI 審查比對中..."):
+                    review_result = extractor.process_review(
+                        doc_path=doc_path,
+                        doc_mime=doc_mime,
+                        case_desc=case_desc_input,
+                        manual_path=manual_path,
+                        manual_mime=manual_mime
+                    )
+                    
+                if "error" in review_result:
+                    st.error(f"❌ 審查失敗：{review_result['error']}")
+                else:
+                    st.success("✅ 預審查完成！")
+                    st.markdown(review_result["report"])
+
