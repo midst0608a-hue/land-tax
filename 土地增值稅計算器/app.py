@@ -5,6 +5,9 @@ from tax_engine import TaxEngine
 from pdf_parser import DataParser
 import os
 import tempfile
+import importlib
+import extractor
+importlib.reload(extractor)
 from extractor import GeminiExtractor
 
 st.set_page_config(page_title="台灣不動產全能工作站", page_icon="🏦", layout="wide")
