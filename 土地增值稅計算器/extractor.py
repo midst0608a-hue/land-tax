@@ -59,13 +59,28 @@ class GeminiExtractor:
 
     def process_file(self, file_path: str, mime_type: str):
         uploaded_file = None
+        temp_ascii_path = None
         try:
             client = genai.Client(api_key=self.api_key)
             prompt = self._get_prompt()
             
+            # Check if filename contains non-ASCII characters to avoid google-genai SDK header encoding bug
+            filename = os.path.basename(file_path)
+            try:
+                filename.encode('ascii')
+                upload_path = file_path
+            except UnicodeEncodeError:
+                import shutil
+                import tempfile
+                ext = os.path.splitext(file_path)[1]
+                temp_dir = os.path.dirname(file_path) or tempfile.gettempdir()
+                temp_ascii_path = os.path.join(temp_dir, f"temp_upload_ascii_{int(time.time())}{ext}")
+                shutil.copy2(file_path, temp_ascii_path)
+                upload_path = temp_ascii_path
+
             # 使用 File API 上傳檔案
             uploaded_file = client.files.upload(
-                file=file_path, 
+                file=upload_path, 
                 config={'mime_type': mime_type}
             )
             
@@ -98,6 +113,12 @@ class GeminiExtractor:
             if uploaded_file:
                 try:
                     client.files.delete(name=uploaded_file.name)
+                except Exception:
+                    pass
+            # 清理 ASCII 暫存檔案
+            if temp_ascii_path and os.path.exists(temp_ascii_path):
+                try:
+                    os.remove(temp_ascii_path)
                 except Exception:
                     pass
 
@@ -133,12 +154,28 @@ class GeminiExtractor:
         """上傳要審查的文件以及(選填的)審查手冊，根據案件描述與手冊規範進行比對與審核"""
         uploaded_doc = None
         uploaded_manual = None
+        temp_doc_ascii = None
+        temp_manual_ascii = None
         try:
             client = genai.Client(api_key=self.api_key)
+            import shutil
+            import tempfile
             
+            # Ensure doc_path is ASCII-safe to avoid google-genai SDK header encoding bug
+            doc_filename = os.path.basename(doc_path)
+            try:
+                doc_filename.encode('ascii')
+                upload_doc_path = doc_path
+            except UnicodeEncodeError:
+                ext = os.path.splitext(doc_path)[1]
+                temp_dir = os.path.dirname(doc_path) or tempfile.gettempdir()
+                temp_doc_ascii = os.path.join(temp_dir, f"temp_doc_ascii_{int(time.time())}{ext}")
+                shutil.copy2(doc_path, temp_doc_ascii)
+                upload_doc_path = temp_doc_ascii
+
             # 1. 上傳要審查的文件 (公契/申請書)
             uploaded_doc = client.files.upload(
-                file=doc_path, 
+                file=upload_doc_path, 
                 config={'mime_type': doc_mime}
             )
             
@@ -156,8 +193,20 @@ class GeminiExtractor:
             
             # 2. 上傳自訂審查手冊 (選填)
             if manual_path and manual_mime:
+                # Ensure manual_path is ASCII-safe
+                manual_filename = os.path.basename(manual_path)
+                try:
+                    manual_filename.encode('ascii')
+                    upload_manual_path = manual_path
+                except UnicodeEncodeError:
+                    ext = os.path.splitext(manual_path)[1]
+                    temp_dir = os.path.dirname(manual_path) or tempfile.gettempdir()
+                    temp_manual_ascii = os.path.join(temp_dir, f"temp_manual_ascii_{int(time.time())}{ext}")
+                    shutil.copy2(manual_path, temp_manual_ascii)
+                    upload_manual_path = temp_manual_ascii
+
                 uploaded_manual = client.files.upload(
-                    file=manual_path, 
+                    file=upload_manual_path, 
                     config={'mime_type': manual_mime}
                 )
                 # 等待檔案處理完成
@@ -232,5 +281,12 @@ class GeminiExtractor:
                 if item:
                     try:
                         client.files.delete(name=item.name)
+                    except:
+                        pass
+            # 清理 ASCII 暫存檔案
+            for temp_path in [temp_doc_ascii, temp_manual_ascii]:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
                     except:
                         pass
