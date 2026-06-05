@@ -229,90 +229,46 @@ class GeminiExtractor:
             {case_desc}
             
             【你的審查任務】：
-            1. 辨識上傳的文件內容 (包含地號、所有權人、統一編號、地址、持分範圍、申報現值、委任代理人資訊、簽章用印欄位、修正塗改痕跡等)。
-            2. 如果使用者有另外上傳「審查手冊或指引檔案」，請嚴格依據該指引中的審查規範與要求進行比對。
-            3. 如果使用者沒有上傳審查手冊，請使用你所熟知的台灣《土地登記規則》、《土地法》、內政部《土地登記審查手冊》以及常見地政事務所補正駁回規範進行審查。
-            
-            【重點審查清單】：
-            - **文件齊備度**：本案依使用者描述的案情，需要哪些書表與附件？上傳的檔案中是否完整包含？是否有缺漏（如所有權狀、納稅證明、身分證影本、授權書等）？
-            - **資訊一致性**：各文件（申請書、公契、契約書、身分證等）上的基本資訊是否完全一致？(例如姓名、統一編號、住所、地建號、面積、持分等)。
-            - **用印與簽章**：申請人、代理人或義務人欄位是否有用印或簽名痕跡？是否有修正塗改卻未在旁蓋章認章的情況？
-            - **法定切結或備註**：申請書備註欄是否寫入本案法定需要的切結聲明（例如優先購買權切結、法人處分切結、無租賃關係切結、未成年人利益切結等）？
-            
-            【報告輸出格式】：
-            請輸出詳細且結構良好的 Markdown 預審報告，內容包含：
-            
-            # 📑 土地登記案件預審查報告
-            
-            ## 📋 案件基本資訊
-            - **申辦類型**：(例如：夫妻贈與所有權移轉登記 / 一般買賣所有權移轉)
-            - **案情大綱**：(簡述使用者的案件背景)
-            
-            ## 🔍 核心檢核清單 (檢核項目與結果)
-            | 檢核項目 | 結果 | 說明 / 差異發現 |
-            | :--- | :--- | :--- |
-            | **文件完整性** | ✅ 通過 / ⚠️ 警告 / ❌ 缺失 | (說明是否缺件) |
-            | **欄位一致性** | ✅ 通過 / ⚠️ 警告 / ❌ 缺失 | (說明名字、統編、地建號是否相符) |
-            | **簽章與塗改** | ✅ 通過 / ⚠️ 警告 / ❌ 缺失 | (說明簽名蓋章或塗改認章情況) |
-            | **法定備註與切結** | ✅ 通過 / ⚠️ 警告 / ❌ 缺失 | (說明備註欄切結是否完整) |
-            
-            ## 💡 審查詳細發現與風險警告
-            (請詳細列出哪些地方有錯、不吻合、或有漏章、缺件的風險，以條列式說明)
-            
-            ## 🛠️ 具體補正與修改建議
-            (針對審查發現，教使用者如何修正文件或補齊哪些文件，以避免送件後被地政事務所「通知補正」或「駁回」)
-            """
-            
-            contents.append(prompt)
-            
-            # 呼叫 Gemini 2.5 Flash
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=contents
-            )
-            
-            return {"success": True, "report": response.text}
-            
-        except Exception as e:
-            return {"error": f"審查 API 發生錯誤：{str(e)}"}
-        finally:
-            # 清理檔案
-            for item in [uploaded_doc, uploaded_manual]:
-                if item:
-                    try:
-                        client.files.delete(name=item.name)
-                    except:
-                        pass
-            # 清理 ASCII 暫存檔案
-            for temp_path in [temp_doc_ascii, temp_manual_ascii]:
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except:
-                        pass
-
-    def process_contract_extraction(self, 
+            1. 辨識上傳的文件內容 (包含地號、所有權人、統一編號、地址、持分範圍、申報現值、委任代理人資訊、簽章用印欄位、修正塗�    def process_contract_extraction(self, 
                                    land_doc_path: str = None, land_doc_mime: str = None,
+                                   seller_id_paths: list = None, seller_id_mimes: list = None,
+                                   buyer_id_paths: list = None, buyer_id_mimes: list = None,
                                    seller_id_path: str = None, seller_id_mime: str = None,
                                    buyer_id_path: str = None, buyer_id_mime: str = None):
         """
-        上傳土地謄本與雙方身分證，利用 Gemini 2.5 Flash 進行資料萃取，對齊公契所需欄位。
+        上傳土地謄本與雙方多份身分證，利用 Gemini 2.5 Flash 進行資料萃取，對齊公契與報稅所需欄位。
         """
         client = genai.Client(api_key=self.api_key)
         uploaded_files = []
         temp_ascii_paths = []
         contents = []
         
+        # 相容單一路徑傳入
+        if seller_id_paths is None:
+            seller_id_paths = [seller_id_path] if seller_id_path else []
+        if seller_id_mimes is None:
+            seller_id_mimes = [seller_id_mime] if seller_id_mime else []
+        if buyer_id_paths is None:
+            buyer_id_paths = [buyer_id_path] if buyer_id_path else []
+        if buyer_id_mimes is None:
+            buyer_id_mimes = [buyer_id_mime] if buyer_id_mime else []
+            
         try:
             import shutil
             import tempfile
             
-            # 檔案列表及其處理
-            files_to_process = [
-                ("land_doc", land_doc_path, land_doc_mime),
-                ("seller_id", seller_id_path, seller_id_mime),
-                ("buyer_id", buyer_id_path, buyer_id_mime)
-            ]
+            # 動態建立要上傳與處理的檔案清單
+            files_to_process = []
+            if land_doc_path and land_doc_mime:
+                files_to_process.append(("land_doc", land_doc_path, land_doc_mime))
+                
+            for idx, (path, mime) in enumerate(zip(seller_id_paths, seller_id_mimes)):
+                if path and mime:
+                    files_to_process.append((f"seller_id_{idx}", path, mime))
+                    
+            for idx, (path, mime) in enumerate(zip(buyer_id_paths, buyer_id_mimes)):
+                if path and mime:
+                    files_to_process.append((f"buyer_id_{idx}", path, mime))
             
             for key, path, mime in files_to_process:
                 if path and mime:
@@ -338,6 +294,108 @@ class GeminiExtractor:
                     # 等待 ACTIVE
                     while True:
                         file_info = client.files.get(name=uploaded_file.name)
+                        state_str = str(file_info.state)
+                        if "ACTIVE" in state_str:
+                            break
+                        elif "FAILED" in state_str:
+                            return {"error": f"檔案 {key} 處理失敗 (狀態: {state_str})"}
+                        time.sleep(2)
+                        
+                    contents.append(file_info)
+            
+            # 如果沒有任何上傳文件，直接返回空欄位
+            if not contents:
+                return {
+                    "success": True,
+                    "data": {
+                        "sellers": [],
+                        "buyers": [],
+                        "lands": []
+                    }
+                }
+                
+            prompt = """
+            你是一個專業的台灣地政登記案件資料萃取助理。
+            請從上傳的所有文件中（包含土地登記謄本、身分證影本等），精確萃取所有相關人與土地資訊，以供填寫「土地所有權移轉契約書 (公契)」與「線上報稅匯入檔」之用。
+            
+            【特別指示：複數當事人與身分證辨識】
+            1. 出賣人 (義務人) 身分證件：上傳的身分證影像中可能包含多位不同出賣人，或同一檔案有多個頁面。請完整萃取「所有」出賣人的資料，並將每個人獨立作為一個物件，填入 `sellers` 陣列中。
+            2. 買受人 (權利人) 身分證件：同樣地，上傳的買受人身分證件可能有多人，請完整萃取「所有」買受人的資料，填入 `buyers` 陣列中。
+            3. 若有上傳土地登記謄本，請從所有權部中核對所有權人姓名：
+               - 身分證名字與謄本所有權人姓名完全一致者，屬於「出賣人（義務人）」。
+               - 身分證名字與謄本所有權人不同的身分證，屬於「買受人（權利人）/ 受贈人」。
+               - 若未上傳土地謄本，僅有身分證，請直接依據上傳類別（出賣人證件為 sellers，買受人證件為 buyers）進行填寫。
+            4. 前次移轉現值資訊 (出賣人)：
+               - 請從土地登記謄本之所有權部（「前次移轉現值」或「歷次取得權利範圍」欄位）中，擷取各出賣人取得該土地持分時的「前次移轉年月」（格式如民國年月：10704，代表107年4月）、「前次移轉現值（單價）」（格式如：19000）、以及取得該持分時的「持分分子/分母」。
+            
+            請以嚴格的 JSON 格式回傳，且必須符合以下 JSON 結構：
+            {
+              "sellers": [
+                {
+                  "name": "出賣人/義務人姓名",
+                  "id_number": "出賣人統一編號（身分證字號）",
+                  "birthday": "出賣人出生年月日，請轉換為民國年格式，例如：民國50年10月12日",
+                  "address": "出賣人戶籍地址",
+                  "prev_year_month": "前次移轉年月（民國格式，如 10704，若沒有則預設 10704）",
+                  "prev_value_per_sqm": "前次移轉現值，僅數字（元/平方公尺，若沒有則預設 19000）",
+                  "prev_holding_numerator": "前次移轉持分分子，僅數字（若沒有則預設 1）",
+                  "prev_holding_denominator": "前次移轉持分分母，僅數字（若沒有則預設 2）"
+                }
+              ],
+              "buyers": [
+                {
+                  "name": "買受人/權利人姓名",
+                  "id_number": "買受人統一編號（身分證字號）",
+                  "birthday": "買受人出生年月日，請轉換為民國年格式，例如：民國80年1月5日",
+                  "address": "買受人戶籍地址",
+                  "holding_numerator": "移轉取得持分分子，僅數字（預設 1）",
+                  "holding_denominator": "移轉取得持分分母，僅數字（預設 1）",
+                  "zip": "買受人郵遞區號（如 407，若沒有則預設 407）"
+                }
+              ],
+              "lands": [
+                {
+                  "section": "地段名稱，例如：順和段",
+                  "land_number": "地號，例如：0151-0000",
+                  "area": "面積，僅填寫數字（單位為平方公尺），例如：679.07",
+                  "holding_numerator": "移轉權利範圍（持分分子），僅數字，例如：1",
+                  "holding_denominator": "移轉權利範圍（持分分母），僅數字，例如：1",
+                  "value_per_sqm": "公告土地現值，僅填寫數字，例如：4160"
+                }
+              ]
+            }
+            
+            請不要包含任何 Markdown 標記 (如 ```json) 或是其他多餘的說明文字。
+            如果某個檔案未提供，或某個欄位在文件中確實找不到，請填寫空字串 ""。
+            """
+            
+            contents.append(prompt)
+            
+            # 呼叫 Gemini 2.5 Flash
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=contents
+            )
+            
+            return self._parse_response(response.text)
+            
+        except Exception as e:
+            return {"error": f"資料萃取失敗：{str(e)}"}
+        finally:
+            # 清理雲端暫存檔
+            for f in uploaded_files:
+                try:
+                    client.files.delete(name=f.name)
+                except:
+                    pass
+            # 清理本機 ASCII 暫存檔
+            for p in temp_ascii_paths:
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except:
+                        pass
+              file_info = client.files.get(name=uploaded_file.name)
                         state_str = str(file_info.state)
                         if "ACTIVE" in state_str:
                             break

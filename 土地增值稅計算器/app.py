@@ -490,9 +490,9 @@ with tab4:
         with col_c1:
             up_land = st.file_uploader("📄 土地登記謄本", type=["pdf", "png", "jpg", "jpeg"], key="c_up_land")
         with col_c2:
-            up_seller = st.file_uploader("👤 出賣人 (義務人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], key="c_up_seller")
+            up_sellers = st.file_uploader("👤 出賣人 (義務人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="c_up_seller")
         with col_c3:
-            up_buyer = st.file_uploader("👤 買受人 (權利人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], key="c_up_buyer")
+            up_buyers = st.file_uploader("👤 買受人 (權利人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="c_up_buyer")
             
         st.markdown("### 2. 契約設定參數")
         col_s1, col_s2 = st.columns(2)
@@ -508,8 +508,8 @@ with tab4:
                 st.session_state.temp_dir = tempfile.mkdtemp()
                 
             land_path, land_mime = None, None
-            seller_path, seller_mime = None, None
-            buyer_path, buyer_mime = None, None
+            seller_paths, seller_mimes = [], []
+            buyer_paths, buyer_mimes = [], []
             
             with st.spinner("正在讀取並分析上傳的文件，此步驟可能需要 10-25 秒，請稍候..."):
                 if up_land:
@@ -519,25 +519,29 @@ with tab4:
                         f.write(up_land.getbuffer())
                     land_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
                     
-                if up_seller:
-                    ext = up_seller.name.split(".")[-1].lower()
-                    seller_path = os.path.join(st.session_state.temp_dir, f"seller_temp.{ext}")
-                    with open(seller_path, "wb") as f:
-                        f.write(up_seller.getbuffer())
-                    seller_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                if up_sellers:
+                    for idx, up_sel in enumerate(up_sellers):
+                        ext = up_sel.name.split(".")[-1].lower()
+                        s_path = os.path.join(st.session_state.temp_dir, f"seller_temp_{idx}.{ext}")
+                        with open(s_path, "wb") as f:
+                            f.write(up_sel.getbuffer())
+                        seller_paths.append(s_path)
+                        seller_mimes.append("application/pdf" if ext == "pdf" else f"image/{ext}")
                     
-                if up_buyer:
-                    ext = up_buyer.name.split(".")[-1].lower()
-                    buyer_path = os.path.join(st.session_state.temp_dir, f"buyer_temp.{ext}")
-                    with open(buyer_path, "wb") as f:
-                        f.write(up_buyer.getbuffer())
-                    buyer_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                if up_buyers:
+                    for idx, up_buy in enumerate(up_buyers):
+                        ext = up_buy.name.split(".")[-1].lower()
+                        b_path = os.path.join(st.session_state.temp_dir, f"buyer_temp_{idx}.{ext}")
+                        with open(b_path, "wb") as f:
+                            f.write(up_buy.getbuffer())
+                        buyer_paths.append(b_path)
+                        buyer_mimes.append("application/pdf" if ext == "pdf" else f"image/{ext}")
                     
                 extractor = GeminiExtractor(api_key=st.session_state.api_key)
                 result = extractor.process_contract_extraction(
                     land_doc_path=land_path, land_doc_mime=land_mime,
-                    seller_id_path=seller_path, seller_id_mime=seller_mime,
-                    buyer_id_path=buyer_path, buyer_id_mime=buyer_mime
+                    seller_id_paths=seller_paths, seller_id_mimes=seller_mimes,
+                    buyer_id_paths=buyer_paths, buyer_id_mimes=buyer_mimes
                 )
                 
                 if "error" in result:
