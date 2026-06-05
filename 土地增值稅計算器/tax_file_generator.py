@@ -101,6 +101,50 @@ def format_land_number_8_digits(land_num_str):
             pass
     return "00000000"
 
+def lookup_section_details(hsn, input_town_cd, section_name):
+    """
+    從 truetax_sections.csv 中查詢段名代碼及行政區代碼。
+    回傳 (sec_code, matched_town_cd)，若查無則回傳 (None, None)
+    """
+    try:
+        import os
+        import pandas as pd
+        csv_path = os.path.join(os.path.dirname(__file__), "truetax_sections.csv")
+        if not os.path.exists(csv_path):
+            return None, None
+            
+        # 讀取 CSV，確保皆為字串避免遺失補零
+        df = pd.read_csv(csv_path, dtype=str)
+        
+        # 清理輸入段名，移除「段」與「小段」
+        clean_sec = str(section_name).replace("段", "").replace("小段", "").strip()
+        
+        # 篩選縣市代碼
+        df_city = df[df['CITY_CD'].str.upper() == str(hsn).upper()]
+        if df_city.empty:
+            return None, None
+            
+        # 1. 優先在指定行政區中進行精確比對
+        match = df_city[(df_city['TOWN_CD'] == input_town_cd) & (df_city['SEC_CHI_NM'] == clean_sec)]
+        if not match.empty:
+            return match.iloc[0]['SEC_SSC_CODE'], match.iloc[0]['TOWN_CD']
+            
+        # 2. 若沒找到，在整個縣市範圍內進行精確比對
+        match = df_city[df_city['SEC_CHI_NM'] == clean_sec]
+        if not match.empty:
+            return match.iloc[0]['SEC_SSC_CODE'], match.iloc[0]['TOWN_CD']
+            
+        # 3. 模糊比對
+        for idx, row in df_city.iterrows():
+            sec_db = str(row['SEC_CHI_NM'])
+            if sec_db in clean_sec or clean_sec in sec_db:
+                return row['SEC_SSC_CODE'], row['TOWN_CD']
+                
+    except Exception:
+        pass
+        
+    return None, None
+
 def generate_tax_zip(data: dict, agent: dict, contract_date, reason: str = "買賣", price_type: str = "公告現值", custom_price: float = 0.0) -> bytes:
     """
     根據申報資料與代理人設定，生成符合台灣地方稅申報作業規範的 5 個 CSV 檔案並打包為 ZIP 格式的 bytes。
@@ -138,6 +182,13 @@ def generate_tax_zip(data: dict, agent: dict, contract_date, reason: str = "買�
     # 主土地資訊 (使用第一筆土地)
     main_land = lands[0]
     land_sec = main_land.get("section", "順和段").replace("段", "")
+    
+    # 進行資料庫查詢段代碼及行政區代碼
+    sec_code, matched_town = lookup_section_details(hsn, town, land_sec)
+    if sec_code:
+        main_land["section_code"] = sec_code
+        town = matched_town # 覆寫為正確的行政區代碼
+        
     land_num_raw = main_land.get("land_number", "0189-0001")
     land_num_8 = format_land_number_8_digits(land_num_raw)
     
@@ -160,7 +211,7 @@ def generate_tax_zip(data: dict, agent: dict, contract_date, reason: str = "買�
         tran_prc = calculated_price
         
     # 地段代碼與標示號碼
-    sec_code = main_land.get("section_code", "0371")  # 預設使用順和段的代號 0371
+    sec_code = main_land.get("section_code", "0371")
     lnd_mark = f"{town}{sec_code}{land_num_8}"
     loc_nm = f"{town}區{land_sec} {land_num_8}"
     

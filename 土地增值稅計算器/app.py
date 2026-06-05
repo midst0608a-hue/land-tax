@@ -9,25 +9,97 @@ import importlib
 import extractor
 importlib.reload(extractor)
 from extractor import GeminiExtractor
-from contract_generator import generate_contract_html, format_date_to_taiwan
+from contract_generator import generate_contract_html, format_date_to_taiwan, generate_application_html, generate_inventory_html
 from tax_file_generator import generate_tax_zip, safe_float, safe_int
 
 def detect_tax_location(data):
     """
-    從萃取出的資料中自動偵測不動產所在的縣市與行政區。
+    從萃取出的資料與 truetax_sections.csv 資料庫自動偵測不動產所在的縣市與行政區。
     回傳：(county_key, town_key, org_key)
     """
     county_name = "台中市 (B)" # 預設台中市
     town_name = "西屯區 (06)"   # 預設西屯區
     org_name = "文心分局 (49)"  # 預設文心分局
     
-    # 1. 嘗試從土地標示的「地段名稱」或「地號」中分析
     lands = data.get("lands", [])
+    main_land = lands[0] if lands else {}
+    sec = main_land.get("section", "")
+    clean_sec = str(sec).replace("段", "").replace("小段", "").strip()
+    
+    # 嘗試從資料庫進行段名查詢
+    if clean_sec:
+        try:
+            import os
+            import pandas as pd
+            csv_path = os.path.join(os.path.dirname(__file__), "truetax_sections.csv")
+            if os.path.exists(csv_path):
+                df = pd.read_csv(csv_path, dtype=str)
+                
+                # 先嘗試在台中市（B）進行精確比對
+                df_b = df[df['CITY_CD'] == 'B']
+                match = df_b[df_b['SEC_CHI_NM'] == clean_sec]
+                if not match.empty:
+                    town_cd = match.iloc[0]['TOWN_CD']
+                    # 對應台中市的行政區與分局
+                    taichung_towns = {
+                        "01": ("中區 (01)", "民權分局 (43)"),
+                        "02": ("東區 (02)", "大智分局 (47)"),
+                        "03": ("南區 (03)", "大智分局 (47)"),
+                        "04": ("西區 (04)", "民權分局 (43)"),
+                        "05": ("北區 (05)", "民權分局 (43)"),
+                        "06": ("西屯區 (06)", "文心分局 (49)"),
+                        "07": ("南屯區 (07)", "文心分局 (49)"),
+                        "08": ("北屯區 (08)", "東山分局 (42)"),
+                        "09": ("豐原區 (09)", "豐原分局 (44)"),
+                        "10": ("東勢區 (10)", "東勢分局 (45)"),
+                        "11": ("大甲區 (11)", "沙鹿分局 (46)"),
+                        "12": ("清水區 (12)", "沙鹿分局 (46)"),
+                        "13": ("沙鹿區 (13)", "沙鹿分局 (46)"),
+                        "14": ("梧棲區 (14)", "沙鹿分局 (46)"),
+                        "15": ("后里區 (15)", "豐原分局 (44)"),
+                        "16": ("神岡區 (16)", "豐原分局 (44)"),
+                        "17": ("潭子區 (17)", "豐原分局 (44)"),
+                        "18": ("大雅區 (18)", "豐原分局 (44)"),
+                        "19": ("新社區 (19)", "東勢分局 (45)"),
+                        "20": ("石岡區 (20)", "東勢分局 (45)"),
+                        "21": ("外埔區 (21)", "沙鹿分局 (46)"),
+                        "22": ("大安區 (22)", "沙鹿分局 (46)"),
+                        "23": ("烏日區 (23)", "大屯分局 (48)"),
+                        "24": ("大肚區 (24)", "沙鹿分局 (46)"),
+                        "25": ("龍井區 (25)", "沙鹿分局 (46)"),
+                        "26": ("霧峰區 (26)", "大屯分局 (48)"),
+                        "27": ("太平區 (27)", "大屯分局 (48)"),
+                        "28": ("大里區 (28)", "大屯分局 (48)"),
+                        "29": ("和平區 (29)", "東勢分局 (45)")
+                    }
+                    if town_cd in taichung_towns:
+                        return ("台中市 (B)", taichung_towns[town_cd][0], taichung_towns[town_cd][1])
+                
+                # 整個縣市比對
+                match = df[df['SEC_CHI_NM'] == clean_sec]
+                if not match.empty:
+                    city_cd = match.iloc[0]['CITY_CD']
+                    town_cd = match.iloc[0]['TOWN_CD']
+                    
+                    counties_rev = {
+                        "A": "台北市 (A)", "B": "台中市 (B)", "C": "基隆市 (C)", "D": "台南市 (D)",
+                        "E": "高雄市 (E)", "F": "新北市 (F)", "G": "宜蘭縣 (G)", "H": "桃園市 (H)",
+                        "I": "嘉義市 (I)", "J": "新竹縣 (J)", "K": "苗栗縣 (K)", "M": "南投縣 (M)",
+                        "N": "彰化縣 (N)", "O": "新竹市 (O)", "P": "雲林縣 (P)", "Q": "嘉義縣 (Q)",
+                        "R": "台南縣 (R)", "S": "高雄縣 (S)", "T": "屏東縣 (T)", "U": "花蓮縣 (U)",
+                        "V": "台東縣 (V)", "W": "金門縣 (W)", "X": "澎湖縣 (X)", "Z": "連江縣 (Z)"
+                    }
+                    
+                    county_disp = counties_rev.get(city_cd, "台中市 (B)")
+                    return (county_disp, town_cd, None)
+        except Exception:
+            pass
+            
+    # Fallback keyword matching
     text_to_search = ""
     for l in lands:
         text_to_search += str(l.get("section", "")) + " " + str(l.get("land_number", "")) + " "
         
-    # 2. 嘗試從買賣雙方地址中分析
     if "seller" in data:
         text_to_search += str(data["seller"].get("address", "")) + " "
     if "buyer" in data:
@@ -37,7 +109,6 @@ def detect_tax_location(data):
     for b in data.get("buyers", []):
         text_to_search += str(b.get("address", "")) + " "
         
-    # 搜尋縣市別
     counties = {
         "台北": "台北市 (A)", "臺北": "台北市 (A)",
         "台中": "台中市 (B)", "臺中": "台中市 (B)",
@@ -68,7 +139,6 @@ def detect_tax_location(data):
             county_name = display_val
             break
             
-    # 如果是台中市，進一步判斷行政區
     if "台中市" in county_name:
         taichung_towns_list = [
             ("西屯", "西屯區 (06)", "文心分局 (49)"),
@@ -486,12 +556,14 @@ with tab4:
         st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
     else:
         st.markdown("### 1. 上傳檔案 (支援 PDF 或圖檔，可分開上傳)")
-        col_c1, col_c2, col_c3 = st.columns(3)
+        col_c1, col_c2, col_c3, col_c4 = st.columns(4)
         with col_c1:
             up_land = st.file_uploader("📄 土地登記謄本", type=["pdf", "png", "jpg", "jpeg"], key="c_up_land")
         with col_c2:
-            up_sellers = st.file_uploader("👤 出賣人 (義務人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="c_up_seller")
+            up_building = st.file_uploader("🏢 建物登記謄本", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="c_up_building")
         with col_c3:
+            up_sellers = st.file_uploader("👤 出賣人 (義務人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="c_up_seller")
+        with col_c4:
             up_buyers = st.file_uploader("👤 買受人 (權利人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="c_up_buyer")
             
         st.markdown("### 2. 契約設定參數")
@@ -508,6 +580,7 @@ with tab4:
                 st.session_state.temp_dir = tempfile.mkdtemp()
                 
             land_path, land_mime = None, None
+            building_paths, building_mimes = [], []
             seller_paths, seller_mimes = [], []
             buyer_paths, buyer_mimes = [], []
             
@@ -518,6 +591,15 @@ with tab4:
                     with open(land_path, "wb") as f:
                         f.write(up_land.getbuffer())
                     land_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                    
+                if up_building:
+                    for idx, up_bld in enumerate(up_building):
+                        ext = up_bld.name.split(".")[-1].lower()
+                        b_path = os.path.join(st.session_state.temp_dir, f"building_temp_{idx}.{ext}")
+                        with open(b_path, "wb") as f:
+                            f.write(up_bld.getbuffer())
+                        building_paths.append(b_path)
+                        building_mimes.append("application/pdf" if ext == "pdf" else f"image/{ext}")
                     
                 if up_sellers:
                     for idx, up_sel in enumerate(up_sellers):
@@ -540,6 +622,7 @@ with tab4:
                 extractor = GeminiExtractor(api_key=st.session_state.api_key)
                 result = extractor.process_contract_extraction(
                     land_doc_path=land_path, land_doc_mime=land_mime,
+                    building_doc_paths=building_paths, building_doc_mimes=building_mimes,
                     seller_id_paths=seller_paths, seller_id_mimes=seller_mimes,
                     buyer_id_paths=buyer_paths, buyer_id_mimes=buyer_mimes
                 )
@@ -547,7 +630,7 @@ with tab4:
                 if "error" in result:
                     st.error(f"❌ 生成失敗：{result['error']}")
                 else:
-                    # 初始化 sellers 與 buyers 列表以支援多所有權人與報稅
+                    # 初始化 sellers 與 buyers 與 buildings 列表以支援多所有權人、建物與報稅
                     extracted_data = result["data"]
                     if "sellers" not in extracted_data:
                         if "seller" in extracted_data:
@@ -559,6 +642,11 @@ with tab4:
                             extracted_data["buyers"] = [extracted_data["buyer"]]
                         else:
                             extracted_data["buyers"] = []
+                    if "buildings" not in extracted_data:
+                        if "building" in extracted_data:
+                            extracted_data["buildings"] = [extracted_data["building"]]
+                        else:
+                            extracted_data["buildings"] = []
                             
                     st.session_state.extracted_contract_data = extracted_data
                     
@@ -686,6 +774,92 @@ with tab4:
                 )
                 data["lands"] = edited_lands.to_dict(orient="records")
                 
+                st.markdown("##### 🏢 建物標示資訊")
+                buildings_list = data.get("buildings", [])
+                for b in buildings_list:
+                    b.setdefault("building_number", "")
+                    b.setdefault("door_number", "")
+                    b.setdefault("land_number", "")
+                    b.setdefault("area_details", "")
+                    b.setdefault("total_area", 0.0)
+                    b.setdefault("attached_area", "")
+                    b.setdefault("holding_numerator", 1.0)
+                    b.setdefault("holding_denominator", 1.0)
+                    b.setdefault("value_per_sqm", 0.0)
+                    b.setdefault("remarks", "")
+                    
+                edited_buildings = st.data_editor(
+                    pd.DataFrame(buildings_list),
+                    num_rows="dynamic",
+                    key="edit_buildings_df",
+                    use_container_width=True,
+                    column_config={
+                        "building_number": st.column_config.TextColumn("建號", width="small"),
+                        "door_number": st.column_config.TextColumn("門牌號碼", width="medium"),
+                        "land_number": st.column_config.TextColumn("基地坐落地號", width="medium"),
+                        "area_details": st.column_config.TextColumn("層次面積明細", width="medium"),
+                        "total_area": st.column_config.NumberColumn("主建物總面積 (㎡)", width="small"),
+                        "attached_area": st.column_config.TextColumn("附屬建物明細", width="small"),
+                        "holding_numerator": st.column_config.NumberColumn("移轉持分分子", width="small"),
+                        "holding_denominator": st.column_config.NumberColumn("移轉持分分母", width="small"),
+                        "value_per_sqm": st.column_config.NumberColumn("評定現值", width="small"),
+                        "remarks": st.column_config.TextColumn("備註", width="small")
+                    }
+                )
+                data["buildings"] = edited_buildings.to_dict(orient="records")
+                
+                st.markdown("##### 💼 登記代理人 (地政士) 資訊設定")
+                col_ag1, col_ag2, col_ag3 = st.columns(3)
+                with col_ag1:
+                    agent_name = st.text_input("代理人姓名", value=data.get("agent", {}).get("name", "張培聰"), key="c_agent_name")
+                    agent_id = st.text_input("身分證統一編號", value=data.get("agent", {}).get("id_number", "L102769057"), key="c_agent_id")
+                with col_ag2:
+                    agent_birthday = st.text_input("出生年月日", value=data.get("agent", {}).get("birthday", "民國 41.8.13"), key="c_agent_birthday")
+                    agent_tel = st.text_input("聯絡電話", value=data.get("agent", {}).get("tel", "04-23591548"), key="c_agent_tel")
+                with col_ag3:
+                    agent_addr = st.text_input("事務所地址", value=data.get("agent", {}).get("address", "台中市西屯區工業區38路92號"), key="c_agent_addr")
+                    agent_remarks = st.text_input("登記申請書備註", value=data.get("agent", {}).get("remarks", "本案係申報土地建物所有權移轉登記。"), key="c_agent_remarks")
+
+                data["agent"] = {
+                    "name": agent_name,
+                    "id_number": agent_id,
+                    "birthday": agent_birthday,
+                    "tel": agent_tel,
+                    "address": agent_addr,
+                    "remarks": agent_remarks,
+                    "hsn_name": "台中市",
+                    "org_name": "龍井"
+                }
+
+                st.markdown("##### 📄 附繳證件清單設定 (土地登記申請書用)")
+                if contract_reason == "買賣":
+                    default_docs = [
+                        "土地建物買賣所有權移轉契約書正、副本各 1份",
+                        "登記清冊 1份",
+                        "雙方身分證明文件各 1份",
+                        "土地、建物所有權狀 1份",
+                        "出賣人印鑑證明 1份",
+                        "土地增值稅、契稅繳清證明書各 1份"
+                    ]
+                else: # 贈與
+                    default_docs = [
+                        "土地建物贈與所有權移轉契約書正、副本各 1份",
+                        "登記清冊 1份",
+                        "雙方身分證明文件各 1份",
+                        "土地、建物所有權狀 1份",
+                        "贈與人印鑑證明 1份",
+                        "土地增值稅、契稅繳清證明書各 1份",
+                        "贈與稅免稅或繳清證明書 1份"
+                    ]
+                
+                if "prev_contract_reason" not in st.session_state or st.session_state.prev_contract_reason != contract_reason:
+                    st.session_state.prev_contract_reason = contract_reason
+                    st.session_state.attached_docs_value = "\n".join(default_docs)
+                    
+                doc_text = st.text_area("附繳證件明細 (每行一個證件，最多12個)", value=st.session_state.attached_docs_value, height=140, key="attached_docs_textarea")
+                st.session_state.attached_docs_value = doc_text
+                selected_docs = [d.strip() for d in doc_text.split("\n") if d.strip()]
+                
                 st.markdown("##### 📍 申報轄區與機關設定")
                 st.caption("💡 縣市別 (HSN)、稽徵機關 (ORG)、鄉鎮市區 (TOWN) 為地方稅網路申報系統之大批匯入規定的行政代號。")
                 
@@ -705,6 +879,8 @@ with tab4:
                     "雲林縣 (P)": "P",
                     "嘉義市 (I)": "I",
                     "嘉義縣 (Q)": "Q",
+                    "台南縣 (R)": "R",
+                    "高雄縣 (S)": "S",
                     "屏東縣 (T)": "T",
                     "宜蘭縣 (G)": "G",
                     "花蓮縣 (U)": "U",
@@ -800,10 +976,22 @@ with tab4:
                     agent_town = taichung_town_map[selected_town]
                 else:
                     col_org_custom, col_town_custom = st.columns(2)
+                    
+                    default_org_val = "41"
+                    default_town_val = "01"
+                    
+                    detected_org = st.session_state.get("detected_org")
+                    detected_town = st.session_state.get("detected_town")
+                    
+                    if detected_org:
+                        default_org_val = str(detected_org).split("(")[-1].replace(")", "").strip()
+                    if detected_town:
+                        default_town_val = str(detected_town).split("(")[-1].replace(")", "").strip()
+                        
                     with col_org_custom:
-                        agent_org = st.text_input("稽徵機關 (ORG)", value="41", help="請輸入對應縣市的稽徵機關代碼。", key="tab4_selected_org_custom")
+                        agent_org = st.text_input("稽徵機關 (ORG)", value=default_org_val, help="請輸入對應縣市的稽徵機關代碼。", key="tab4_selected_org_custom")
                     with col_town_custom:
-                        agent_town = st.text_input("鄉鎮市區 (TOWN)", value="01", help="請輸入對應縣市的鄉鎮市區代碼。", key="tab4_selected_town_custom")
+                        agent_town = st.text_input("鄉鎮市區 (TOWN)", value=default_town_val, help="請輸入對應縣市的鄉鎮市區代碼。", key="tab4_selected_town_custom")
                         
                 agent_info = {
                     "name": agent_name,
@@ -940,9 +1128,10 @@ with tab4:
             col_dl1, col_dl2 = st.columns(2)
             with col_dl1:
                 # 產出土地所有權移轉契約書 HTML
-                file_name = f"土地{contract_reason}所有權移轉契約書.html"
+                has_b = len(data.get("buildings", [])) > 0
+                file_name = f"土地{'建物' if has_b else ''}{contract_reason}所有權移轉契約書.html"
                 st.download_button(
-                    label=f"📥 下載土地{contract_reason}移轉契約書 (A4 Word 格式)",
+                    label=f"📥 下載土地{'建物' if has_b else ''}{contract_reason}移轉契約書 (A4 Word 格式)",
                     data=st.session_state.generated_contract_html,
                     file_name=file_name,
                     mime="text/html",
@@ -972,6 +1161,37 @@ with tab4:
                     )
                 except Exception as e_zip:
                     st.error(f"無法產生報稅檔案：{str(e_zip)}")
+            
+            # 土地登記申請書 與 登記清冊 下載
+            col_dl3, col_dl4 = st.columns(2)
+            with col_dl3:
+                app_html = generate_application_html(
+                    data=data,
+                    agent_info=data.get("agent", {}),
+                    documents=selected_docs,
+                    contract_type=contract_reason,
+                    contract_date=contract_date
+                )
+                st.download_button(
+                    label="📥 下載土地登記申請書 (A4 Word 格式)",
+                    data=app_html,
+                    file_name="土地登記申請書.html",
+                    mime="text/html",
+                    use_container_width=True
+                )
+            with col_dl4:
+                inv_html = generate_inventory_html(
+                    data=data,
+                    contract_type=contract_reason,
+                    contract_date=contract_date
+                )
+                st.download_button(
+                    label="📥 下載登記清冊 (A4 Word 格式)",
+                    data=inv_html,
+                    file_name="登記清冊.html",
+                    mime="text/html",
+                    use_container_width=True
+                )
             
             # HTML 預覽
             st.markdown("### 📄 契約書線上預覽 (以下為 A4 預覽樣式)")
