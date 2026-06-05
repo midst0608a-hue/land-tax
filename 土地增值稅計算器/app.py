@@ -9,6 +9,8 @@ import importlib
 import extractor
 importlib.reload(extractor)
 from extractor import GeminiExtractor
+from contract_generator import generate_contract_html, format_date_to_taiwan
+from tax_file_generator import generate_tax_zip, safe_float, safe_int
 
 st.set_page_config(page_title="台灣不動產全能工作站", page_icon="🏦", layout="wide")
 
@@ -28,8 +30,35 @@ with st.sidebar:
     st.markdown("### 💡 如何取得 API Key？")
     st.markdown("1. 前往 [Google AI Studio](https://aistudio.google.com/)")
     st.markdown("2. 登入 Google 帳號並點擊 Get API key")
+    
+    st.markdown("---")
+    st.header("💼 申報代理人（代書）設定")
+    agent_name = st.text_input("代理人姓名", value="張培聰")
+    agent_id = st.text_input("代理人身分證字號", value="L102769057")
+    agent_tel = st.text_input("聯絡電話", value="0423591548 0963138957")
+    agent_addr = st.text_input("服務地址", value="台中市西屯區工業區38路92號")
+    agent_zip = st.text_input("郵遞區號", value="407")
+    
+    col_hsn, col_org, col_town = st.columns(3)
+    with col_hsn:
+        agent_hsn = st.text_input("縣市別 (HSN)", value="B")
+    with col_org:
+        agent_org = st.text_input("稽徵機關 (ORG)", value="49")
+    with col_town:
+        agent_town = st.text_input("鄉鎮市區 (TOWN)", value="06")
+        
+    agent_info = {
+        "name": agent_name,
+        "id_number": agent_id,
+        "tel": agent_tel,
+        "address": agent_addr,
+        "zip": agent_zip,
+        "hsn": agent_hsn,
+        "org": agent_org,
+        "town": agent_town
+    }
 
-tab1, tab2, tab3 = st.tabs(["🧮 土地增值稅試算", "📄 智能資料萃取", "🔍 智能案卷預審"])
+tab1, tab2, tab3, tab4 = st.tabs(["🧮 土地增值稅試算", "📄 智能資料萃取", "🔍 智能案卷預審", "✍️ 智能契約生成"])
 
 with tab1:
     st.markdown("上傳土地謄本 (PDF) 與物價指數表 (Excel)，系統將自動擷取所有土地並批次試算土地增值稅。 (自動略過建物謄本)")
@@ -351,4 +380,362 @@ with tab3:
                 else:
                     st.success("✅ 預審查完成！")
                     st.markdown(review_result["report"])
+
+with tab4:
+    st.header("✍️ 土地所有權移轉契約書智能生成")
+    st.markdown("上傳您的土地登記謄本、出賣人（義務人）與買受人（權利人）的身分證件。AI 將自動辨識雙方姓名、身分證字號、住所與土地標示，套入符合地政官方格式的契約書，並提供下載 Word（HTML相容）格式的契約檔案。")
+    
+    if not st.session_state.api_key:
+        st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
+    else:
+        st.markdown("### 1. 上傳檔案 (支援 PDF 或圖檔，可分開上傳)")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            up_land = st.file_uploader("📄 土地登記謄本", type=["pdf", "png", "jpg", "jpeg"], key="c_up_land")
+        with col_c2:
+            up_seller = st.file_uploader("👤 出賣人 (義務人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], key="c_up_seller")
+        with col_c3:
+            up_buyer = st.file_uploader("👤 買受人 (權利人) 身分證件", type=["pdf", "png", "jpg", "jpeg"], key="c_up_buyer")
+            
+        st.markdown("### 2. 契約設定參數")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            contract_reason = st.selectbox("登記原因", ["買賣", "贈與"], index=0, key="c_reason")
+            contract_date = st.date_input("立約日期", datetime.date.today(), key="c_date")
+        with col_s2:
+            price_type = st.selectbox("契約價格認定方式", ["公告現值自動計算", "自訂買賣價"], index=0, key="c_price_type")
+            custom_price = st.number_input("自訂買賣價 (元)", min_value=0.0, value=0.0, step=10000.0, key="c_custom_price")
+            
+        if st.button("✨ 一鍵智能生成公契契約書", type="primary", use_container_width=True):
+            if 'temp_dir' not in st.session_state:
+                st.session_state.temp_dir = tempfile.mkdtemp()
+                
+            land_path, land_mime = None, None
+            seller_path, seller_mime = None, None
+            buyer_path, buyer_mime = None, None
+            
+            with st.spinner("正在讀取並分析上傳的文件，此步驟可能需要 10-25 秒，請稍候..."):
+                if up_land:
+                    ext = up_land.name.split(".")[-1].lower()
+                    land_path = os.path.join(st.session_state.temp_dir, f"land_temp.{ext}")
+                    with open(land_path, "wb") as f:
+                        f.write(up_land.getbuffer())
+                    land_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                    
+                if up_seller:
+                    ext = up_seller.name.split(".")[-1].lower()
+                    seller_path = os.path.join(st.session_state.temp_dir, f"seller_temp.{ext}")
+                    with open(seller_path, "wb") as f:
+                        f.write(up_seller.getbuffer())
+                    seller_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                    
+                if up_buyer:
+                    ext = up_buyer.name.split(".")[-1].lower()
+                    buyer_path = os.path.join(st.session_state.temp_dir, f"buyer_temp.{ext}")
+                    with open(buyer_path, "wb") as f:
+                        f.write(up_buyer.getbuffer())
+                    buyer_mime = "application/pdf" if ext == "pdf" else f"image/{ext}"
+                    
+                extractor = GeminiExtractor(api_key=st.session_state.api_key)
+                result = extractor.process_contract_extraction(
+                    land_doc_path=land_path, land_doc_mime=land_mime,
+                    seller_id_path=seller_path, seller_id_mime=seller_mime,
+                    buyer_id_path=buyer_path, buyer_id_mime=buyer_mime
+                )
+                
+                if "error" in result:
+                    st.error(f"❌ 生成失敗：{result['error']}")
+                else:
+                    # 初始化 sellers 與 buyers 列表以支援多所有權人與報稅
+                    extracted_data = result["data"]
+                    if "sellers" not in extracted_data:
+                        if "seller" in extracted_data:
+                            extracted_data["sellers"] = [extracted_data["seller"]]
+                        else:
+                            extracted_data["sellers"] = []
+                    if "buyers" not in extracted_data:
+                        if "buyer" in extracted_data:
+                            extracted_data["buyers"] = [extracted_data["buyer"]]
+                        else:
+                            extracted_data["buyers"] = []
+                            
+                    st.session_state.extracted_contract_data = extracted_data
+                    
+                    if extracted_data["sellers"]:
+                        extracted_data["seller"] = extracted_data["sellers"][0]
+                    if extracted_data["buyers"]:
+                        extracted_data["buyer"] = extracted_data["buyers"][0]
+                        
+                    st.session_state.generated_contract_html = generate_contract_html(
+                        data=extracted_data,
+                        contract_type=contract_reason,
+                        contract_date=contract_date,
+                        price_type=price_type,
+                        custom_price=custom_price
+                    )
+                    
+        # 顯示生成後的預覽與編輯調整
+        if "generated_contract_html" in st.session_state and "extracted_contract_data" in st.session_state:
+            st.success("✅ 契約書已智能生成！")
+            
+            # 提供使用者手動微調
+            with st.expander("🛠️ (可選) 檢視與調整 AI 萃取出的欄位資料"):
+                st.info("如果 AI 辨識的統編、姓名或地址有微小偏差，您可以在下方表格中直接修正，系統會即時重新生成契約書與報稅申報預覽！")
+                data = st.session_state.extracted_contract_data
+                
+                # 取得或初始化列表
+                sellers_list = data.get("sellers", [])
+                if not sellers_list and "seller" in data:
+                    sellers_list = [data["seller"]]
+                for s in sellers_list:
+                    s.setdefault("name", "")
+                    s.setdefault("id_number", "")
+                    s.setdefault("birthday", "")
+                    s.setdefault("address", "")
+                    s.setdefault("prev_year_month", "10704")
+                    s.setdefault("prev_value_per_sqm", 19000.0)
+                    s.setdefault("prev_holding_numerator", 1.0)
+                    s.setdefault("prev_holding_denominator", 2.0)
+                
+                st.markdown("##### 👥 出賣人（義務人）名單")
+                edited_sellers = st.data_editor(
+                    pd.DataFrame(sellers_list), 
+                    num_rows="dynamic", 
+                    key="edit_sellers_df",
+                    use_container_width=True,
+                    column_config={
+                        "name": st.column_config.TextColumn("姓名", width="medium"),
+                        "id_number": st.column_config.TextColumn("身分證字號/統編", width="medium"),
+                        "birthday": st.column_config.TextColumn("出生年月日", width="medium"),
+                        "address": st.column_config.TextColumn("戶籍地址", width="large"),
+                        "prev_year_month": st.column_config.TextColumn("前次移轉年月 (如10704)", width="small"),
+                        "prev_value_per_sqm": st.column_config.NumberColumn("前次現值 (元/㎡)", width="small"),
+                        "prev_holding_numerator": st.column_config.NumberColumn("前次持分分子", width="small"),
+                        "prev_holding_denominator": st.column_config.NumberColumn("前次持分分母", width="small")
+                    }
+                )
+                data["sellers"] = edited_sellers.to_dict(orient="records")
+                if data["sellers"]:
+                    data["seller"] = data["sellers"][0]
+                
+                buyers_list = data.get("buyers", [])
+                if not buyers_list and "buyer" in data:
+                    buyers_list = [data["buyer"]]
+                for b in buyers_list:
+                    b.setdefault("name", "")
+                    b.setdefault("id_number", "")
+                    b.setdefault("birthday", "")
+                    b.setdefault("address", "")
+                    b.setdefault("holding_numerator", 1.0)
+                    b.setdefault("holding_denominator", 1.0)
+                    b.setdefault("zip", "407")
+                    
+                st.markdown("##### 👥 買受人（權利人）名單")
+                edited_buyers = st.data_editor(
+                    pd.DataFrame(buyers_list),
+                    num_rows="dynamic",
+                    key="edit_buyers_df",
+                    use_container_width=True,
+                    column_config={
+                        "name": st.column_config.TextColumn("姓名", width="medium"),
+                        "id_number": st.column_config.TextColumn("身分證字號/統編", width="medium"),
+                        "birthday": st.column_config.TextColumn("出生年月日", width="medium"),
+                        "address": st.column_config.TextColumn("戶籍地址", width="large"),
+                        "holding_numerator": st.column_config.NumberColumn("持分分子", width="small"),
+                        "holding_denominator": st.column_config.NumberColumn("持分分母", width="small"),
+                        "zip": st.column_config.TextColumn("郵遞區號", width="small")
+                    }
+                )
+                data["buyers"] = edited_buyers.to_dict(orient="records")
+                if data["buyers"]:
+                    data["buyer"] = data["buyers"][0]
+                
+                st.markdown("##### 📍 土地標示資訊")
+                lands_list = data.get("lands", [])
+                if not lands_list:
+                    lands_list = [{"section": "順和段", "land_number": "0189-0001", "area": 99.02, "holding_numerator": 1.0, "holding_denominator": 1.0, "value_per_sqm": 60000.0}]
+                for l in lands_list:
+                    l.setdefault("section", "順和段")
+                    l.setdefault("land_number", "0189-0001")
+                    l.setdefault("area", 99.02)
+                    l.setdefault("holding_numerator", 1.0)
+                    l.setdefault("holding_denominator", 1.0)
+                    l.setdefault("value_per_sqm", 60000.0)
+                    
+                edited_lands = st.data_editor(
+                    pd.DataFrame(lands_list), 
+                    num_rows="dynamic", 
+                    key="edit_lands_df",
+                    use_container_width=True,
+                    column_config={
+                        "section": st.column_config.TextColumn("段名", width="medium"),
+                        "land_number": st.column_config.TextColumn("地號 (如0189-0001)", width="medium"),
+                        "area": st.column_config.NumberColumn("面積 (㎡)", width="small"),
+                        "holding_numerator": st.column_config.NumberColumn("持分分子", width="small"),
+                        "holding_denominator": st.column_config.NumberColumn("持分分母", width="small"),
+                        "value_per_sqm": st.column_config.NumberColumn("公告現值", width="small")
+                    }
+                )
+                data["lands"] = edited_lands.to_dict(orient="records")
+                    
+                st.session_state.extracted_contract_data = data
+                
+                # 即時重新生成 HTML
+                st.session_state.generated_contract_html = generate_contract_html(
+                    data=data,
+                    contract_type=contract_reason,
+                    contract_date=contract_date,
+                    price_type=price_type,
+                    custom_price=custom_price
+                )
+
+            # 計算預覽與印花稅資訊
+            total_contract_price = 0.0
+            for land in data.get("lands", []):
+                area = safe_float(land.get("area") or 0.0)
+                num_num = safe_float(land.get("holding_numerator") or 1.0)
+                num_den = safe_float(land.get("holding_denominator") or 1.0)
+                val_per_sqm = safe_float(land.get("value_per_sqm") or 0.0)
+                ratio = num_num / num_den if num_den > 0 else 1.0
+                total_contract_price += area * ratio * val_per_sqm
+                
+            if contract_reason == "買賣" and price_type == "自訂買賣價":
+                final_price = custom_price
+            else:
+                final_price = total_contract_price
+                
+            stamp_tax = int(round(final_price * 0.001))
+            tran_reas = "21" if contract_reason == "買賣" else "34"
+
+            # ----------------------------------------------------
+            # 地方稅網路申報資料預覽 (Checklist)
+            # ----------------------------------------------------
+            st.divider()
+            st.markdown("### 📋 地方稅網路申報預覽核對表")
+            st.info("💡 請先核對以下自動彙整的土地增值稅與印花稅申報內容。確認無誤後，即可於下方下載線上報稅匯入檔 (.zip)。")
+            
+            with st.container(border=True):
+                st.markdown("<h4 style='text-align: center; color: #1E3A8A; margin-top: 10px; margin-bottom: 20px;'>土地增值稅暨印花稅大批申報核對表</h4>", unsafe_allow_html=True)
+                
+                col_i1, col_i2, col_i3 = st.columns(3)
+                with col_i1:
+                    st.metric("申報土地移轉總金額 (現值)", f"{final_price:,.0f} 元")
+                with col_i2:
+                    st.metric("應納印花稅 (千分之一憑證稅)", f"{stamp_tax:,.0f} 元", "1‰ 課徵率")
+                with col_i3:
+                    st.metric("案件登記原因", f"{contract_reason} (原因代碼: {tran_reas})")
+                
+                st.markdown("---")
+                
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.markdown("**📂 申報案件基礎設定**")
+                    st.markdown(f"""
+                    - **申報縣市別 (HSN)**: `{agent_info['hsn']}` (台中市)
+                    - **主轄稽徵機關 (ORG)**: `{agent_info['org']}` (分局代號)
+                    - **申報鄉鎮市區 (TOWN)**: `{agent_info['town']}`
+                    - **立契申報日期 (TRD_DATE)**: `{format_date_to_taiwan(contract_date)}`
+                    - **移轉價格認定**: `{price_type}` (金額: {final_price:,.0f} 元)
+                    """)
+                with col_d2:
+                    st.markdown("**💼 申報代理人 (地政士/代書) 資訊**")
+                    st.markdown(f"""
+                    - **代理人姓名**: `{agent_info['name']}`
+                    - **統一編號/身分證**: `{agent_info['id_number']}`
+                    - **聯絡電話**: `{agent_info['tel']}`
+                    - **通訊地址**: `{agent_info['address']}` (郵遞區號: `{agent_info['zip']}`)
+                    """)
+                
+                st.markdown("---")
+                st.markdown("**📍 申報土地標示明細**")
+                land_preview_data = []
+                for idx, land in enumerate(data.get("lands", [])):
+                    sec = land.get("section", "")
+                    num = land.get("land_number", "")
+                    area = safe_float(land.get("area") or 0.0)
+                    num_num = safe_float(land.get("holding_numerator") or 1.0)
+                    num_den = safe_float(land.get("holding_denominator") or 1.0)
+                    val_per_sqm = safe_float(land.get("value_per_sqm") or 0.0)
+                    holding_ratio = f"{int(num_num)}/{int(num_den)}" if num_den > 1 else "全部"
+                    
+                    ratio = num_num / num_den if num_den > 0 else 1.0
+                    tran_a = area * ratio
+                    land_val = tran_a * val_per_sqm
+                    
+                    land_preview_data.append({
+                        "序號": idx+1,
+                        "土地坐落": f"{sec}段 {num}地號",
+                        "面積 (㎡)": f"{area:,.2f}",
+                        "移轉比例": holding_ratio,
+                        "移轉持分面積 (㎡)": f"{tran_a:,.2f}",
+                        "公告現值 (元/㎡)": f"{val_per_sqm:,.0f}",
+                        "本次移轉土地總值 (元)": f"{land_val:,.0f}"
+                    })
+                st.table(pd.DataFrame(land_preview_data))
+                
+                col_sb1, col_sb2 = st.columns(2)
+                with col_sb1:
+                    st.markdown("**👤 出賣人 (義務人/原所有權人) 資訊**")
+                    for idx, s in enumerate(data.get("sellers", [])):
+                        st.markdown(f"""
+                        **出賣人 {idx+1}: {s.get('name', '無姓名')}**
+                        - 統一編號/統編: `{s.get('id_number', '')}`
+                        - 出生日期: `{s.get('birthday', '')}`
+                        - 戶籍住所: `{s.get('address', '')}`
+                        - 前次移轉年月: `{s.get('prev_year_month', '10704')}`
+                        - 前次申報現值: `{safe_int(s.get('prev_value_per_sqm') or 19000):,} 元/㎡`
+                        - 前次取得持分: `{safe_int(s.get('prev_holding_numerator') or 1)}/{safe_int(s.get('prev_holding_denominator') or 2)}`
+                        """)
+                with col_sb2:
+                    st.markdown("**👤 買受人 (權利人/新所有權人) 資訊**")
+                    for idx, b in enumerate(data.get("buyers", [])):
+                        st.markdown(f"""
+                        **買受人 {idx+1}: {b.get('name', '無姓名')}**
+                        - 統一編號/統編: `{b.get('id_number', '')}`
+                        - 出生日期: `{b.get('birthday', '')}`
+                        - 戶籍住所: `{b.get('address', '')}` (郵遞區號: `{b.get('zip', '407')}`)
+                        - 移轉取得持分: `{safe_int(b.get('holding_numerator') or 1)}/{safe_int(b.get('holding_denominator') or 1)}`
+                        """)
+                        
+            # 下載按鈕區域
+            st.markdown("### 📥 申報檔案與公契下載")
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                # 產出土地所有權移轉契約書 HTML
+                file_name = f"土地{contract_reason}所有權移轉契約書.html"
+                st.download_button(
+                    label=f"📥 下載土地{contract_reason}移轉契約書 (A4 Word 格式)",
+                    data=st.session_state.generated_contract_html,
+                    file_name=file_name,
+                    mime="text/html",
+                    use_container_width=True
+                )
+            with col_dl2:
+                # 產出大批匯入申報 ZIP
+                try:
+                    tax_zip_bytes = generate_tax_zip(
+                        data=data,
+                        agent=agent_info,
+                        contract_date=contract_date,
+                        reason=contract_reason,
+                        price_type=price_type,
+                        custom_price=custom_price
+                    )
+                    west_year = contract_date.year
+                    filename_date = f"{west_year}{contract_date.month:02d}{contract_date.day:02d}"
+                    zip_filename = f"TAX_IMPORT_{agent_info['id_number']}_{filename_date}.zip"
+                    
+                    st.download_button(
+                        label="📥 下載線上報稅匯入檔 (.zip)",
+                        data=tax_zip_bytes,
+                        file_name=zip_filename,
+                        mime="application/zip",
+                        use_container_width=True
+                    )
+                except Exception as e_zip:
+                    st.error(f"無法產生報稅檔案：{str(e_zip)}")
+            
+            # HTML 預覽
+            st.markdown("### 📄 契約書線上預覽 (以下為 A4 預覽樣式)")
+            st.components.v1.html(st.session_state.generated_contract_html, height=800, scrolling=True)
 

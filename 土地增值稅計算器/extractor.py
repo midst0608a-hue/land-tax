@@ -290,3 +290,145 @@ class GeminiExtractor:
                         os.remove(temp_path)
                     except:
                         pass
+
+    def process_contract_extraction(self, 
+                                   land_doc_path: str = None, land_doc_mime: str = None,
+                                   seller_id_path: str = None, seller_id_mime: str = None,
+                                   buyer_id_path: str = None, buyer_id_mime: str = None):
+        """
+        上傳土地謄本與雙方身分證，利用 Gemini 2.5 Flash 進行資料萃取，對齊公契所需欄位。
+        """
+        client = genai.Client(api_key=self.api_key)
+        uploaded_files = []
+        temp_ascii_paths = []
+        contents = []
+        
+        try:
+            import shutil
+            import tempfile
+            
+            # 檔案列表及其處理
+            files_to_process = [
+                ("land_doc", land_doc_path, land_doc_mime),
+                ("seller_id", seller_id_path, seller_id_mime),
+                ("buyer_id", buyer_id_path, buyer_id_mime)
+            ]
+            
+            for key, path, mime in files_to_process:
+                if path and mime:
+                    filename = os.path.basename(path)
+                    try:
+                        filename.encode('ascii')
+                        upload_path = path
+                    except UnicodeEncodeError:
+                        ext = os.path.splitext(path)[1]
+                        temp_dir = os.path.dirname(path) or tempfile.gettempdir()
+                        temp_ascii = os.path.join(temp_dir, f"temp_{key}_ascii_{int(time.time())}{ext}")
+                        shutil.copy2(path, temp_ascii)
+                        temp_ascii_paths.append(temp_ascii)
+                        upload_path = temp_ascii
+                        
+                    # 上傳檔案
+                    uploaded_file = client.files.upload(
+                        file=upload_path,
+                        config={'mime_type': mime}
+                    )
+                    uploaded_files.append(uploaded_file)
+                    
+                    # 等待 ACTIVE
+                    while True:
+                        file_info = client.files.get(name=uploaded_file.name)
+                        state_str = str(file_info.state)
+                        if "ACTIVE" in state_str:
+                            break
+                        elif "FAILED" in state_str:
+                            return {"error": f"檔案 {key} 處理失敗 (狀態: {state_str})"}
+                        time.sleep(2)
+                        
+                    contents.append(file_info)
+            
+            # 如果沒有任何上傳文件，直接返回空欄位
+            if not contents:
+                return {
+                    "success": True,
+                    "data": {
+                        "seller": {"name": "", "id_number": "", "birthday": "", "address": ""},
+                        "buyer": {"name": "", "id_number": "", "birthday": "", "address": ""},
+                        "lands": []
+                    }
+                }
+                
+            prompt = """
+            你是一個專業的台灣地政登記案件資料萃取助理。
+            請從上傳的所有文件中（包含土地登記謄本、身分證影本等），精確萃取以下資訊，以供填寫「土地所有權移轉契約書 (公契)」與「線上報稅匯入檔」之用。
+            
+            【比對對應指引】：
+            1. 土地登記謄本包含「土地標示」與「所有權人（現有所有權人）」資訊。通常謄本上的所有權人即為「出賣人（義務人）」。
+            2. 身分證正反面影本包含個人的姓名、統一編號（身分證字號）、出生年月日、戶籍地址。
+            3. 請仔細識別哪張身分證屬於「出賣人（義務人）」，哪張身分證屬於「買受人（權利人）/ 受贈人」。
+               - 所有權人名下的名字與地址，請與身分證進行核對。如果身分證的名字和謄本的所有權人名字完全一致，則它是「出賣人/義務人」的身分證。
+               - 另一張名字與謄本所有權人不同的身分證，則為「買受人/權利人/受贈人」的身分證。
+               - 如果沒有上傳謄本，僅有身分證，請根據檔案標記或您的理解來區分，或者將兩者分別填入 seller 和 buyer 中。
+            4. 前次移轉現值申報資訊：
+               - 請從土地登記謄本之所有權部（「前次移轉現值」或「歷次取得權利範圍」欄位）中，擷取該出賣人（所有權人）取得該土地時的「前次移轉年月」（格式如民國年月：10704，代表107年4月）、「前次移轉現值（單價）」（格式如：19000）、以及取得該持分時的「持分分子/分母」。
+            
+            請以嚴格的 JSON 格式回傳，且必須符合以下 JSON 結構：
+            {
+              "seller": {
+                "name": "出賣人/義務人姓名",
+                "id_number": "出賣人統一編號（身分證字號）",
+                "birthday": "出賣人出生年月日，請轉換為民國年格式，例如：民國50年10月12日",
+                "address": "出賣人戶籍地址",
+                "prev_year_month": "前次移轉年月（民國格式，如 10704，若沒有則預設 10704）",
+                "prev_value_per_sqm": "前次移轉現值，僅數字（元/平方公尺，若沒有則預設 19000）",
+                "prev_holding_numerator": "前次移轉持分分子，僅數字（若沒有則預設 1）",
+                "prev_holding_denominator": "前次移轉持分分母，僅數字（若沒有則預設 2）"
+              },
+              "buyer": {
+                "name": "買受人/權利人姓名",
+                "id_number": "買受人統一編號（身分證字號）",
+                "birthday": "買受人出生年月日，請轉換為民國年格式，例如：民國80年1月5日",
+                "address": "買受人戶籍地址"
+              },
+              "lands": [
+                {
+                  "section": "地段名稱，例如：順和段",
+                  "land_number": "地號，例如：0151-0000",
+                  "area": "面積，僅填寫數字（單位為平方公尺），例如：679.07",
+                  "holding_numerator": "持分分子（如果是全部，請填 1）",
+                  "holding_denominator": "持分分母（如果是全部，請填 1）",
+                  "value_per_sqm": "公告現值，僅填寫數字，例如：4160"
+                }
+              ]
+            }
+            
+            請不要包含任何 Markdown 標記 (如 ```json) 或是其他多餘的說明文字。
+            如果某個檔案未提供，或某個欄位在文件中確實找不到，請填寫空字串 ""。
+            """
+            
+            contents.append(prompt)
+            
+            # 呼叫 Gemini 2.5 Flash
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=contents
+            )
+            
+            return self._parse_response(response.text)
+            
+        except Exception as e:
+            return {"error": f"資料萃取失敗：{str(e)}"}
+        finally:
+            # 清理雲端暫存檔
+            for f in uploaded_files:
+                try:
+                    client.files.delete(name=f.name)
+                except:
+                    pass
+            # 清理本機 ASCII 暫存檔
+            for p in temp_ascii_paths:
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except:
+                        pass
