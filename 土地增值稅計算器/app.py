@@ -12,6 +12,106 @@ from extractor import GeminiExtractor
 from contract_generator import generate_contract_html, format_date_to_taiwan
 from tax_file_generator import generate_tax_zip, safe_float, safe_int
 
+def detect_tax_location(data):
+    """
+    從萃取出的資料中自動偵測不動產所在的縣市與行政區。
+    回傳：(county_key, town_key, org_key)
+    """
+    county_name = "台中市 (B)" # 預設台中市
+    town_name = "西屯區 (06)"   # 預設西屯區
+    org_name = "西屯分局 (49)"  # 預設西屯分局 (文心分局)
+    
+    # 1. 嘗試從土地標示的「地段名稱」或「地號」中分析
+    lands = data.get("lands", [])
+    text_to_search = ""
+    for l in lands:
+        text_to_search += str(l.get("section", "")) + " " + str(l.get("land_number", "")) + " "
+        
+    # 2. 嘗試從買賣雙方地址中分析
+    if "seller" in data:
+        text_to_search += str(data["seller"].get("address", "")) + " "
+    if "buyer" in data:
+        text_to_search += str(data["buyer"].get("address", "")) + " "
+    for s in data.get("sellers", []):
+        text_to_search += str(s.get("address", "")) + " "
+    for b in data.get("buyers", []):
+        text_to_search += str(b.get("address", "")) + " "
+        
+    # 搜尋縣市別
+    counties = {
+        "台北": "台北市 (A)", "臺北": "台北市 (A)",
+        "台中": "台中市 (B)", "臺中": "台中市 (B)",
+        "新北": "新北市 (F)",
+        "桃園": "桃園市 (H)",
+        "台南": "台南市 (D)", "臺南": "台南市 (D)",
+        "高雄": "高雄市 (E)",
+        "基隆": "基隆市 (C)",
+        "新竹市": "新竹市 (O)",
+        "新竹縣": "新竹縣 (J)",
+        "苗栗": "苗栗縣 (K)",
+        "彰化": "彰化縣 (N)",
+        "南投": "南投縣 (M)",
+        "雲林": "雲林縣 (P)",
+        "嘉義市": "嘉義市 (I)",
+        "嘉義縣": "嘉義縣 (Q)",
+        "屏東": "屏東縣 (T)",
+        "宜蘭": "宜蘭縣 (G)",
+        "花蓮": "花蓮縣 (U)",
+        "台東": "台東縣 (V)", "臺東": "台東縣 (V)",
+        "澎湖": "澎湖縣 (X)",
+        "金門": "金門縣 (W)",
+        "連江": "連江縣 (Z)"
+    }
+    
+    for key, display_val in counties.items():
+        if key in text_to_search:
+            county_name = display_val
+            break
+            
+    # 如果是台中市，進一步判斷行政區
+    if "台中市" in county_name:
+        taichung_towns_list = [
+            ("西屯", "西屯區 (06)", "西屯分局 (49)"),
+            ("南屯", "南屯區 (07)", "西屯分局 (49)"),
+            ("中區", "中區 (01)", "民權分局 (43)"),
+            ("東區", "東區 (02)", "民權分局 (43)"),
+            ("南區", "南區 (03)", "民權分局 (43)"),
+            ("西區", "西區 (04)", "民權分局 (43)"),
+            ("北區", "北區 (05)", "民權分局 (43)"),
+            ("北屯", "北屯區 (08)", "文心分局 (42)"),
+            ("豐原", "豐原區 (09)", "豐原分局 (44)"),
+            ("東勢", "東勢區 (10)", "東勢分局 (45)"),
+            ("大甲", "大甲區 (11)", "沙鹿分局 (46)"),
+            ("清水", "清水區 (12)", "沙鹿分局 (46)"),
+            ("沙鹿", "沙鹿區 (13)", "沙鹿分局 (46)"),
+            ("梧棲", "梧棲區 (14)", "梧棲分局 (47)"),
+            ("后里", "后里區 (15)", "豐原分局 (44)"),
+            ("神岡", "神岡區 (16)", "豐原分局 (44)"),
+            ("潭子", "潭子區 (17)", "豐原分局 (44)"),
+            ("大雅", "大雅區 (18)", "豐原分局 (44)"),
+            ("新社", "新社區 (19)", "東勢分局 (45)"),
+            ("石岡", "石岡區 (20)", "東勢分局 (45)"),
+            ("外埔", "外埔區 (21)", "沙鹿分局 (46)"),
+            ("大安", "大安區 (22)", "沙鹿分局 (46)"),
+            ("烏日", "烏日區 (23)", "大屯分局 (48)"),
+            ("大肚", "大肚區 (24)", "沙鹿分局 (46)"),
+            ("龍井", "龍井區 (25)", "沙鹿分局 (46)"),
+            ("霧峰", "霧峰區 (26)", "大屯分局 (48)"),
+            ("太平", "太平區 (27)", "大屯分局 (48)"),
+            ("大里", "大里區 (28)", "大屯分局 (48)"),
+            ("和平", "和平區 (29)", "東勢分局 (45)")
+        ]
+        
+        for kw, town_disp, org_disp in taichung_towns_list:
+            if kw in text_to_search:
+                town_name = town_disp
+                org_name = org_disp
+                break
+                
+        return (county_name, town_name, org_name)
+    else:
+        return (county_name, None, None)
+
 st.set_page_config(page_title="台灣不動產全能工作站", page_icon="🏦", layout="wide")
 
 st.title("🏦 台灣不動產全能工作站")
@@ -39,14 +139,124 @@ with st.sidebar:
     agent_addr = st.text_input("服務地址", value="台中市西屯區工業區38路92號")
     agent_zip = st.text_input("郵遞區號", value="407")
     
-    col_hsn, col_org, col_town = st.columns(3)
-    with col_hsn:
-        agent_hsn = st.text_input("縣市別 (HSN)", value="B")
-    with col_org:
-        agent_org = st.text_input("稽徵機關 (ORG)", value="49")
-    with col_town:
-        agent_town = st.text_input("鄉鎮市區 (TOWN)", value="06")
+    st.markdown("##### 📍 申報轄區與機關設定")
+    st.caption("💡 縣市別 (HSN)、稽徵機關 (ORG)、鄉鎮市區 (TOWN) 為地方稅網路申報系統之大批匯入規定的行政代號。")
+    
+    county_map = {
+        "台中市 (B)": "B",
+        "台北市 (A)": "A",
+        "新北市 (F)": "F",
+        "桃園市 (H)": "H",
+        "台南市 (D)": "D",
+        "高雄市 (E)": "E",
+        "基隆市 (C)": "C",
+        "新竹市 (O)": "O",
+        "新竹縣 (J)": "J",
+        "苗栗縣 (K)": "K",
+        "彰化縣 (N)": "N",
+        "南投縣 (M)": "M",
+        "雲林縣 (P)": "P",
+        "嘉義市 (I)": "I",
+        "嘉義縣 (Q)": "Q",
+        "屏東縣 (T)": "T",
+        "宜蘭縣 (G)": "G",
+        "花蓮縣 (U)": "U",
+        "台東縣 (V)": "V",
+        "澎湖縣 (X)": "X",
+        "金門縣 (W)": "W",
+        "連江縣 (Z)": "Z"
+    }
+    
+    county_list = list(county_map.keys())
+    default_county_idx = 0
+    if "detected_county" in st.session_state and st.session_state.detected_county in county_list:
+        default_county_idx = county_list.index(st.session_state.detected_county)
         
+    selected_county = st.selectbox(
+        "縣市別 (HSN)", 
+        county_list, 
+        index=default_county_idx, 
+        help="地方稅申報系統之縣市代碼（例如 B 代表台中市）。"
+    )
+    agent_hsn = county_map[selected_county]
+    
+    # 稽徵機關與鄉鎮市區對應 (針對台中市 B 加強預設選單，其他縣市以文字輸入/常用代號備用)
+    if agent_hsn == "B":
+        taichung_org_map = {
+            "西屯分局 (49)": "49",
+            "地方稅務局總局 (41)": "41",
+            "文心分局 (42)": "42",
+            "民權分局 (43)": "43",
+            "豐原分局 (44)": "44",
+            "東勢分局 (45)": "45",
+            "沙鹿分局 (46)": "46",
+            "梧棲分局 (47)": "47",
+            "大屯分局 (48)": "48"
+        }
+        taichung_org_list = list(taichung_org_map.keys())
+        default_org_idx = 0
+        if "detected_org" in st.session_state and st.session_state.detected_org in taichung_org_list:
+            default_org_idx = taichung_org_list.index(st.session_state.detected_org)
+            
+        selected_org = st.selectbox(
+            "稽徵機關 (ORG)", 
+            taichung_org_list, 
+            index=default_org_idx,
+            help="申報所屬稅務局分局代碼（例如 49 代表西屯分局）。"
+        )
+        agent_org = taichung_org_map[selected_org]
+        
+        taichung_town_map = {
+            "西屯區 (06)": "06",
+            "中區 (01)": "01",
+            "東區 (02)": "02",
+            "南區 (03)": "03",
+            "西區 (04)": "04",
+            "北區 (05)": "05",
+            "南屯區 (07)": "07",
+            "北屯區 (08)": "08",
+            "豐原區 (09)": "09",
+            "東勢區 (10)": "10",
+            "大甲區 (11)": "11",
+            "清水區 (12)": "12",
+            "沙鹿區 (13)": "13",
+            "梧棲區 (14)": "14",
+            "后里區 (15)": "15",
+            "神岡區 (16)": "16",
+            "潭子區 (17)": "17",
+            "大雅區 (18)": "18",
+            "新社區 (19)": "19",
+            "石岡區 (20)": "20",
+            "外埔區 (21)": "21",
+            "大安區 (22)": "22",
+            "烏日區 (23)": "23",
+            "大肚區 (24)": "24",
+            "龍井區 (25)": "25",
+            "霧峰區 (26)": "26",
+            "太平區 (27)": "27",
+            "大里區 (28)": "28",
+            "和平區 (29)": "29"
+        }
+        taichung_town_list = list(taichung_town_map.keys())
+        default_town_idx = 0
+        if "detected_town" in st.session_state and st.session_state.detected_town in taichung_town_list:
+            default_town_idx = taichung_town_list.index(st.session_state.detected_town)
+            
+        selected_town = st.selectbox(
+            "鄉鎮市區 (TOWN)", 
+            taichung_town_list, 
+            index=default_town_idx,
+            help="申報土地所屬行政區代碼（例如 06 代表西屯區）。"
+        )
+        agent_town = taichung_town_map[selected_town]
+    else:
+        # 其他縣市顯示文字框，便於代書填寫對應的代碼
+        col_org_custom, col_town_custom = st.columns(2)
+        with col_org_custom:
+            agent_org = st.text_input("稽徵機關 (ORG)", value="41", help="請輸入對應縣市的稽徵機關代碼。")
+        with col_town_custom:
+            agent_town = st.text_input("鄉鎮市區 (TOWN)", value="01", help="請輸入對應縣市的鄉鎮市區代碼。")
+            
     agent_info = {
         "name": agent_name,
         "id_number": agent_id,
@@ -460,6 +670,12 @@ with tab4:
                             extracted_data["buyers"] = []
                             
                     st.session_state.extracted_contract_data = extracted_data
+                    
+                    # 自動偵測不動產轄區與稅務分局，並更新 selectbox 的預設值
+                    county_key, town_key, org_key = detect_tax_location(extracted_data)
+                    st.session_state.detected_county = county_key
+                    st.session_state.detected_town = town_key
+                    st.session_state.detected_org = org_key
                     
                     if extracted_data["sellers"]:
                         extracted_data["seller"] = extracted_data["sellers"][0]
