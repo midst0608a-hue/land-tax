@@ -68,9 +68,20 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
     contract_date_str = format_date_to_taiwan(contract_date or datetime.date.today())
     
     # 取得雙方當事人資料
-    seller = data.get("seller", {})
-    buyer = data.get("buyer", {})
+    sellers = data.get("sellers", [])
+    if not sellers and "seller" in data:
+        sellers = [data["seller"]]
+    buyers = data.get("buyers", [])
+    if not buyers and "buyer" in data:
+        buyers = [data["buyer"]]
+        
+    seller = sellers[0] if sellers else {}
+    buyer = buyers[0] if buyers else {}
     lands = data.get("lands", [])
+    
+    # 連接多個姓名
+    seller_names = "、".join([s.get("name", "") for s in sellers if s.get("name")]) or "________________"
+    buyer_names = "、".join([b.get("name", "") for b in buyers if b.get("name")]) or "________________"
     
     # 計算土地移轉契約價格資訊
     land_rows_html = ""
@@ -97,7 +108,7 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
         calculated_price = area * ratio * val_per_sqm
         total_contract_price += calculated_price
         
-        land_rows_html += f"""
+        land_rows_html += f'''
         <tr>
             <td style="border: 1px solid black; padding: 8px; text-align: center;">{idx+1}</td>
             <td style="border: 1px solid black; padding: 8px;">{sec}段 {num}地號</td>
@@ -108,7 +119,7 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
             <td style="border: 1px solid black; padding: 8px; text-align: right;">{val_per_sqm:,.0f}</td>
             <td style="border: 1px solid black; padding: 8px; text-align: right;">{calculated_price:,.0f}</td>
         </tr>
-        """
+        '''
         
     # 若使用者選擇自訂合約價格（買賣價），則合約總價為自訂金額
     if contract_type == "買賣" and price_type == "自訂買賣價":
@@ -121,6 +132,37 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
     # 決定標題與契約原因
     title = "土地買賣所有權移轉契約書" if contract_type == "買賣" else "土地贈與所有權移轉契約書"
     reason_text = "買賣" if contract_type == "買賣" else "贈與"
+    
+    # 動態產生簽章欄位 HTML
+    sign_rows_html = ""
+    for idx, s in enumerate(sellers):
+        identity = "出賣人<br/>(義務人)" if idx == 0 else ""
+        sign_rows_html += f'''
+        <tr>
+            <td style="font-weight: bold; text-align: center;">{identity}</td>
+            <td>
+                <b>{s.get("name", "")}</b><br/>
+                <span style="color: #999; font-size: 12px;">(簽名/蓋用印鑑章)</span>
+            </td>
+            <td style="text-align: center;">{s.get("id_number", "")}</td>
+            <td style="text-align: center;">{s.get("birthday", "")}</td>
+            <td>{s.get("address", "")}</td>
+        </tr>
+        '''
+    for idx, b in enumerate(buyers):
+        identity = "買受人<br/>(權利人)" if idx == 0 else ""
+        sign_rows_html += f'''
+        <tr>
+            <td style="font-weight: bold; text-align: center;">{identity}</td>
+            <td>
+                <b>{b.get("name", "")}</b><br/>
+                <span style="color: #999; font-size: 12px;">(簽名/蓋用印鑑章)</span>
+            </td>
+            <td style="text-align: center;">{b.get("id_number", "")}</td>
+            <td style="text-align: center;">{b.get("birthday", "")}</td>
+            <td>{b.get("address", "")}</td>
+        </tr>
+        '''
     
     html = f"""<!DOCTYPE html>
 <html>
@@ -163,6 +205,11 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
             background-color: #f2f2f2;
             text-align: center;
         }}
+        .sign-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }}
         .sign-table td {{
             height: 60px;
             vertical-align: top;
@@ -185,8 +232,8 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
     <div class="header">土地所有權移轉契約書</div>
     
     <div style="text-align: right; font-weight: bold; margin-bottom: 20px;">
-        立契人：買受人（權利人） {buyer.get("name", "________________")} <br/>
-        立契人：出賣人（義務人） {seller.get("name", "________________")}
+        立契人：買受人（權利人） {buyer_names} <br/>
+        立契人：出賣人（義務人） {seller_names}
     </div>
 
     <div class="clause">
@@ -195,7 +242,7 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
 
     <div class="clause">
         <b>第一條：移轉登記原因與標的</b><br/>
-        出賣人（義務人）將其所有下列土地所有權，依【<b>{reason_text}</b>】登記原因移轉予買受人（權利人）。
+        出賣人（義務人）【<b>{seller_names}</b>】將其所有下列土地所有權，依【<b>{reason_text}</b>】登記原因移轉予買受人（權利人）【<b>{buyer_names}</b>】。
     </div>
 
     <table>
@@ -252,26 +299,7 @@ def generate_contract_html(data: dict, contract_type: str = "買賣", contract_d
             <th style="width: 15%;">出生年月日</th>
             <th style="width: 25%;">戶籍地址</th>
         </tr>
-        <tr>
-            <td style="font-weight: bold; text-align: center;">出賣人<br/>(義務人)</td>
-            <td>
-                <b>{seller.get("name", "")}</b><br/>
-                <span style="color: #999; font-size: 12px;">(簽名/蓋用印鑑章)</span>
-            </td>
-            <td style="text-align: center;">{seller.get("id_number", "")}</td>
-            <td style="text-align: center;">{seller.get("birthday", "")}</td>
-            <td>{seller.get("address", "")}</td>
-        </tr>
-        <tr>
-            <td style="font-weight: bold; text-align: center;">買受人<br/>(權利人)</td>
-            <td>
-                <b>{buyer.get("name", "")}</b><br/>
-                <span style="color: #999; font-size: 12px;">(簽名/蓋用印鑑章)</span>
-            </td>
-            <td style="text-align: center;">{buyer.get("id_number", "")}</td>
-            <td style="text-align: center;">{buyer.get("birthday", "")}</td>
-            <td>{buyer.get("address", "")}</td>
-        </tr>
+        {sign_rows_html}
     </table>
 
     <div class="footer-date">
