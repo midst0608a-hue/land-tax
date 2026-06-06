@@ -1,16 +1,46 @@
 import streamlit as st
-import pandas as pd
-import datetime
-from tax_engine import TaxEngine
-from pdf_parser import DataParser
+import sys
 import os
+import datetime
 import tempfile
 import importlib
-import extractor
-importlib.reload(extractor)
-from extractor import GeminiExtractor
-from contract_generator import generate_contract_html, format_date_to_taiwan, generate_application_html, generate_inventory_html
-from tax_file_generator import generate_tax_zip, safe_float, safe_int
+
+# 確保專案目錄在 sys.path 的最前面，解決 Streamlit Cloud 載入同目錄模組的問題
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+try:
+    import pandas as pd
+    from tax_engine import TaxEngine
+    from pdf_parser import DataParser
+    import extractor
+    importlib.reload(extractor)
+    from extractor import GeminiExtractor
+    from contract_generator import generate_contract_html, format_date_to_taiwan, generate_application_html, generate_inventory_html
+    from tax_file_generator import generate_tax_zip, safe_float, safe_int
+except Exception as e:
+    import traceback
+    st.set_page_config(page_title="系統除錯診斷面板", page_icon="🛠️", layout="wide")
+    st.error("🚨 載入系統模組時發生錯誤 (Error Loading Modules)")
+    st.markdown("### 錯誤詳細資訊")
+    st.code(f"錯誤類型: {type(e).__name__}\n錯誤訊息: {str(e)}")
+    
+    st.markdown("### 🔍 詳細錯誤追蹤 (Traceback)")
+    st.code(traceback.format_exc())
+    
+    st.markdown("### 📂 系統環境診斷資料")
+    st.write(f"目前工作目錄 (CWD): `{os.getcwd()}`")
+    st.write(f"腳本所在目錄 (Script Dir): `{os.path.dirname(os.path.abspath(__file__))}`")
+    st.write("`sys.path` 清單:")
+    st.code("\n".join(sys.path))
+    
+    st.write("腳本目錄檔案列表:")
+    try:
+        st.code("\n".join(os.listdir(current_dir)))
+    except Exception as list_err:
+        st.write(f"無法列出檔案: {list_err}")
+    st.stop()
 
 def detect_tax_location(data):
     """
