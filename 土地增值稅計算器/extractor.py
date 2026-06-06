@@ -270,12 +270,13 @@ class GeminiExtractor:
 
     def process_contract_extraction(self, 
                                    land_doc_path: str = None, land_doc_mime: str = None,
+                                   building_doc_paths: list = None, building_doc_mimes: list = None,
                                    seller_id_paths: list = None, seller_id_mimes: list = None,
                                    buyer_id_paths: list = None, buyer_id_mimes: list = None,
                                    seller_id_path: str = None, seller_id_mime: str = None,
                                    buyer_id_path: str = None, buyer_id_mime: str = None):
         """
-        上傳土地謄本與雙方多份身分證，利用 Gemini 2.5 Flash 進行資料萃取，對齊公契與報稅所需欄位。
+        上傳土地及建物登記謄本與雙方多份身分證，利用 Gemini 2.5 Flash 進行資料萃取，對齊公契與報稅所需欄位。
         """
         client = genai.Client(api_key=self.api_key)
         uploaded_files = []
@@ -291,6 +292,10 @@ class GeminiExtractor:
             buyer_id_paths = [buyer_id_path] if buyer_id_path else []
         if buyer_id_mimes is None:
             buyer_id_mimes = [buyer_id_mime] if buyer_id_mime else []
+        if building_doc_paths is None:
+            building_doc_paths = []
+        if building_doc_mimes is None:
+            building_doc_mimes = []
             
         try:
             import shutil
@@ -300,6 +305,10 @@ class GeminiExtractor:
             files_to_process = []
             if land_doc_path and land_doc_mime:
                 files_to_process.append(("land_doc", land_doc_path, land_doc_mime))
+                
+            for idx, (path, mime) in enumerate(zip(building_doc_paths, building_doc_mimes)):
+                if path and mime:
+                    files_to_process.append((f"building_doc_{idx}", path, mime))
                 
             for idx, (path, mime) in enumerate(zip(seller_id_paths, seller_id_mimes)):
                 if path and mime:
@@ -349,13 +358,14 @@ class GeminiExtractor:
                     "data": {
                         "sellers": [],
                         "buyers": [],
-                        "lands": []
+                        "lands": [],
+                        "buildings": []
                     }
                 }
                 
             prompt = """
             你是一個專業的台灣地政登記案件資料萃取助理。
-            請從上傳的所有文件中（包含土地登記謄本、身分證影本等），精確萃取所有相關人與土地資訊，以供填寫「土地所有權移轉契約書 (公契)」與「線上報稅匯入檔」之用。
+            請從上傳的所有文件中（包含土地登記謄本、建物登記謄本、身分證影本等），精確萃取所有相關人、土地與建物資訊，以供填寫「土地建物所有權移轉契約書 (公契)」、「土地登記申請書」與「登記清冊」之用。
             
             【特別指示：複數當事人與身分證辨識】
             1. 出賣人 (義務人) 身分證件：上傳的身分證影像中可能包含多位不同出賣人，或同一檔案有多個頁面。請完整萃取「所有」出賣人的資料，並將每個人獨立作為一個物件，填入 `sellers` 陣列中。
@@ -366,6 +376,18 @@ class GeminiExtractor:
                - 若未上傳土地謄本，僅有身分證，請直接依據上傳類別（出賣人證件為 sellers，買受人證件為 buyers）進行填寫。
             4. 前次移轉現值申報資訊 (出賣人)：
                - 請從土地登記謄本之所有權部（「前次移轉現值」或「歷次取得權利範圍」欄位）中，擷取該出賣人（所有權人）取得該土地時的「前次移轉年月」（格式如民國年月：10704，代表107年4月）、「前次移轉現值（單價）」（格式如：19000）、以及取得該持分時的「持分分子/分母」。
+            
+            【特別指示：針對建物登記謄本】
+            如果上傳的檔案包含「建物登記謄本」，請務必擷取以下資訊並填入 `buildings` 陣列中：
+            - 建號：例如「183」或「00183-000」
+            - 門牌：例如「龍井區三港路水裡港巷68之16號」
+            - 主要用途：例如「住家用」或「商業用」
+            - 基地坐落地號：例如「田水段 859-23地號」
+            - 層次與面積：各樓層面積，例如「一層 43.30, 二層 56.46, 騎樓 15.05... 共計 124.71」
+            - 附屬建物：用途與面積，例如「陽台 2.42」
+            - 移轉權利範圍：持分分子/分母，例如「1/1」
+            - 房屋現值（評定現值）：如果文件中含有課稅現值或房屋評定現值（若無則為 0）
+            - 備註：例如「公同共有」或空白
             
             請以嚴格的 JSON 格式回傳，且必須符合以下 JSON 結構：
             {
@@ -400,6 +422,20 @@ class GeminiExtractor:
                   "holding_numerator": "移轉權利範圍（持分分子），僅數字，例如 1",
                   "holding_denominator": "移轉權利範圍（持分分母），僅數字，例如 1",
                   "value_per_sqm": "公告地段現值，僅填寫數字，例如：4160"
+                }
+              ],
+              "buildings": [
+                {
+                  "building_number": "建號，例如：183",
+                  "door_number": "門牌地址，例如：龍井區三港路水裡港巷68之16號",
+                  "land_number": "基地坐落地號，例如：田水段 859-23地號",
+                  "area_details": "層次面積明細，例如：一層 43.30, 二層 56.46, 騎樓 15.05",
+                  "total_area": "主建物總面積，僅填寫數字，例如：124.7",
+                  "attached_area": "附屬建物明細，例如：陽台 2.42",
+                  "holding_numerator": "移轉持分分子，僅數字，例如：1",
+                  "holding_denominator": "移轉持分分母，僅數字，例如：1",
+                  "value_per_sqm": "評定現值，僅填寫數字，若無則填 0",
+                  "remarks": "備註，例如：公同共有"
                 }
               ]
             }

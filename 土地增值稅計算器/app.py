@@ -649,13 +649,20 @@ with tab4:
                         buyer_paths.append(b_path)
                         buyer_mimes.append("application/pdf" if ext == "pdf" else f"image/{ext}")
                     
-                extractor = GeminiExtractor(api_key=st.session_state.api_key)
-                result = extractor.process_contract_extraction(
-                    land_doc_path=land_path, land_doc_mime=land_mime,
-                    building_doc_paths=building_paths, building_doc_mimes=building_mimes,
-                    seller_id_paths=seller_paths, seller_id_mimes=seller_mimes,
-                    buyer_id_paths=buyer_paths, buyer_id_mimes=buyer_mimes
-                )
+                try:
+                    extractor = GeminiExtractor(api_key=st.session_state.api_key)
+                    result = extractor.process_contract_extraction(
+                        land_doc_path=land_path, land_doc_mime=land_mime,
+                        building_doc_paths=building_paths, building_doc_mimes=building_mimes,
+                        seller_id_paths=seller_paths, seller_id_mimes=seller_mimes,
+                        buyer_id_paths=buyer_paths, buyer_id_mimes=buyer_mimes
+                    )
+                except Exception as runtime_err:
+                    import traceback
+                    st.error(f"❌ 呼叫資料萃取方法時發生異常 (Runtime Error): {str(runtime_err)}")
+                    st.markdown("### 🔍 詳細錯誤追蹤 (Traceback)")
+                    st.code(traceback.format_exc())
+                    st.stop()
                 
                 if "error" in result:
                     st.error(f"❌ 生成失敗：{result['error']}")
