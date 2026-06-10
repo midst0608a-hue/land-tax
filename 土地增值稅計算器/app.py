@@ -26,6 +26,16 @@ except Exception as e:
     st.markdown("### 錯誤詳細資訊")
     st.code(f"錯誤類型: {type(e).__name__}\n錯誤訊息: {str(e)}")
     
+    # 診斷 contract_generator 載入來源
+    st.markdown("### 🔬 模組載入診斷分析")
+    try:
+        import contract_generator
+        st.info(f"📍 偵測到 `contract_generator` 模組載入路徑: `{contract_generator.__file__}`")
+        st.write("該模組所包含的成員清單:")
+        st.code(str(dir(contract_generator)))
+    except Exception as inspect_err:
+        st.warning(f"無法載入 `contract_generator` 進行診斷: {inspect_err}")
+    
     st.markdown("### 🔍 詳細錯誤追蹤 (Traceback)")
     st.code(traceback.format_exc())
     
