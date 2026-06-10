@@ -4,6 +4,64 @@ import tempfile
 import subprocess
 import datetime
 
+def format_birthday_to_7char(bday_str: str) -> str:
+    """
+    將出生年月日格式化為符合 Person.PE03 長度限制 (MaxLen: 7) 的 YYYMMDD 格式。
+    例如：'民國50年5月5日' -> '0500505'
+          '民國 41.8.13' -> '0410813'
+    """
+    if not bday_str:
+        return "0000000"
+    
+    # 移除非數字分隔字元與轉換中文日期單位
+    bday_clean = bday_str.replace("民國", "").replace("年", "/").replace("月", "/").replace("日", "").replace(" ", "")
+    
+    digits = []
+    for c in bday_clean:
+        if c.isdigit() or c in ['.', '/', '-']:
+            digits.append(c)
+    digits_str = "".join(digits).strip('.')
+    
+    parts = []
+    for sep in ['.', '/', '-']:
+        if sep in digits_str:
+            parts = digits_str.split(sep)
+            break
+            
+    if len(parts) == 3:
+        try:
+            y = int(parts[0])
+            m = int(parts[1])
+            d = int(parts[2])
+            return f"{y:03d}{m:02d}{d:02d}"
+        except:
+            pass
+            
+    # fallback: keep digits
+    clean_digits = "".join([c for c in bday_str if c.isdigit()])
+    if len(clean_digits) == 7:
+        return clean_digits
+    elif len(clean_digits) > 7:
+        return clean_digits[:7]
+    else:
+        return clean_digits.zfill(7)
+
+def format_tel_to_8char(tel_str: str) -> str:
+    """
+    將電話號碼過濾為僅數字且最長 8 碼以符合 Person.PE07 長度限制 (MaxLen: 8)。
+    """
+    if not tel_str:
+        return ""
+    digits = "".join([c for c in tel_str if c.isdigit()])
+    return digits[-8:] if len(digits) >= 8 else digits
+
+def format_to_len(val, max_len: int) -> str:
+    """
+    防禦性截斷字串長度，防止寫入 MS Access 時發生欄位長度超出限制 (欄位太小) 的例外狀況。
+    """
+    s = str(val) if val is not None else ""
+    return s[:max_len]
+
 def write_case_to_db(db_path: str, data: dict, agent_info: dict, contract_reason: str, contract_date) -> dict:
     """
     將萃取並過濾後的不動產案件資料寫入代書軟體資料庫 LandAgent.mdb 中。
@@ -27,46 +85,46 @@ def write_case_to_db(db_path: str, data: dict, agent_info: dict, contract_reason
     # 組合 JSON 資料 payload
     payload = {
         "bioid": bioid,
-        "agent_name": agent_info.get("name", "張培聰"),
-        "agent_id": agent_info.get("id_number", "L102769057"),
-        "agent_birthday": agent_info.get("birthday", "民國 41.8.13"),
-        "agent_tel": agent_info.get("tel", "04-23591548"),
-        "agent_address": agent_info.get("address", "台中市西屯區工業區38路92號"),
-        "doc_name": doc_name,
-        "city_name": agent_info.get("city_name", "台中市").replace(" (B)", "").replace(" (A)", ""),
-        "area_name": agent_info.get("area_name", "西屯區").split(" (")[0],
-        "docdate": f"{contract_date.year}/{contract_date.month:02d}/{contract_date.day:02d}" if contract_date else today.strftime("%Y/%m/%d"),
-        "doctime": today.strftime("%H:%M:%S"),
+        "agent_name": format_to_len(agent_info.get("name", "張培聰"), 50),
+        "agent_id": format_to_len(agent_info.get("id_number", "L102769057"), 50),
+        "agent_birthday": format_birthday_to_7char(agent_info.get("birthday", "民國 41.8.13")),
+        "agent_tel": format_tel_to_8char(agent_info.get("tel", "04-23591548")),
+        "agent_address": format_to_len(agent_info.get("address", "台中市西屯區工業區38路92號"), 50),
+        "doc_name": format_to_len(doc_name, 50),
+        "city_name": format_to_len(agent_info.get("city_name", "台中市").replace(" (B)", "").replace(" (A)", ""), 6),
+        "area_name": format_to_len(agent_info.get("area_name", "西屯區").split(" (")[0], 50),
+        "docdate": f"{contract_date.year}{contract_date.month:02d}{contract_date.day:02d}" if contract_date else today.strftime("%Y%m%d"),
+        "doctime": today.strftime("%H%M%S"),
         "sellers": [],
         "buyers": [],
         "lands": [],
         "buildings": []
     }
     
-    # 整理當事人 (義務人 PE00 = 義務人, 權利人 PE00 = 權利人)
+    # 整理當事人 (義務人 PE00 = 義, 權利人 PE00 = 權)
     for s in data.get("sellers", []):
         payload["sellers"].append({
-            "name": s.get("name", ""),
-            "id_number": s.get("id_number", ""),
-            "birthday": s.get("birthday", ""),
-            "address": s.get("address", ""),
+            "name": format_to_len(s.get("name", ""), 10),
+            "id_number": format_to_len(s.get("id_number", ""), 80),
+            "birthday": format_birthday_to_7char(s.get("birthday", "")),
+            "address": format_to_len(s.get("address", ""), 80),
             "numerator": int(s.get("prev_holding_numerator") or 1),
             "denominator": int(s.get("prev_holding_denominator") or 2),
-            "tel": s.get("tel", ""),
+            "tel": format_tel_to_8char(s.get("tel", "")),
             # 前次移轉資料
-            "prev_year_month": s.get("prev_year_month", "10704"),
+            "prev_year_month": format_to_len(s.get("prev_year_month", "10704"), 10),
             "prev_value": int(s.get("prev_value_per_sqm") or 19000)
         })
         
     for b in data.get("buyers", []):
         payload["buyers"].append({
-            "name": b.get("name", ""),
-            "id_number": b.get("id_number", ""),
-            "birthday": b.get("birthday", ""),
-            "address": b.get("address", ""),
+            "name": format_to_len(b.get("name", ""), 10),
+            "id_number": format_to_len(b.get("id_number", ""), 80),
+            "birthday": format_birthday_to_7char(b.get("birthday", "")),
+            "address": format_to_len(b.get("address", ""), 80),
             "numerator": int(b.get("holding_numerator") or 1),
             "denominator": int(b.get("holding_denominator") or 1),
-            "tel": b.get("tel", "")
+            "tel": format_tel_to_8char(b.get("tel", ""))
         })
         
     # 整理土地
@@ -78,10 +136,10 @@ def write_case_to_db(db_path: str, data: dict, agent_info: dict, contract_reason
         val = float(l.get("value_per_sqm") or 0.0)
         
         payload["lands"].append({
-            "section": l.get("section", ""),
-            "land_number": l.get("land_number", ""),
-            "holding_str": f"{num}/{den}",
-            "value_per_sqm": val,
+            "section": format_to_len(l.get("section", ""), 10),
+            "land_number": format_to_len(l.get("land_number", ""), 10),
+            "holding_str": format_to_len(f"{num}/{den}", 50),
+            "value_per_sqm": format_to_len(int(val), 4),  # Max 4 for LA05
             "area": area,
             "total_price": area * ratio * val
         })
@@ -93,24 +151,24 @@ def write_case_to_db(db_path: str, data: dict, agent_info: dict, contract_reason
         ratio = num / den if den > 0 else 1.0
         
         payload["buildings"].append({
-            "building_number": b.get("building_number", ""),
-            "door_number": b.get("door_number", ""),
-            "land_number": b.get("land_number", ""),
+            "building_number": format_to_len(b.get("building_number", ""), 6),
+            "door_number": format_to_len(b.get("door_number", ""), 6),      # Max 6 for BU02
+            "land_number": format_to_len(b.get("land_number", ""), 120),    # Max 120 for BU03
             "total_area": float(b.get("total_area") or 0.0),
-            "attached_area": b.get("attached_area", ""),
+            "attached_area": format_to_len(b.get("attached_area", ""), 80),
             "holding_ratio": ratio,
             # 樓層拆解 (如果有明細格式，例如「一層 43.30, 二層 56.46」)
             "floors": parse_building_floors(b.get("area_details", ""))
         })
 
-    # 建立 PowerShell 腳本寫入資料庫
+    # 建立 PowerShell 腳本寫入資料庫 (使用中括號包裹所有欄位名以避免 GUID 等 Access 關鍵字發生語法錯誤)
     ps_script = """
 Param(
     [string]$jsonPath,
     [string]$dbPath
 )
 
-$data = Get-Content $jsonPath -Raw | ConvertFrom-Json
+$data = Get-Content $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $connStr = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source=$dbPath;"
 
 try {
@@ -125,7 +183,7 @@ try {
     # 1. 寫入 Main
     $cmd = $conn.CreateCommand()
     $cmd.Transaction = $transaction
-    $cmd.CommandText = "INSERT INTO [Main] (ISNEED, GUID, BIOID, USERID, USER_NAME, DOC_NAME, CITY_NAME, AREA_NAME, DOCDATE, DOCTIME) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    $cmd.CommandText = "INSERT INTO [Main] ([ISNEED], [GUID], [BIOID], [USERID], [USER_NAME], [DOC_NAME], [CITY_NAME], [AREA_NAME], [DOCDATE], [DOCTIME]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
     $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
     $cmd.Parameters.AddWithValue("bioid", $data.bioid) | Out-Null
@@ -139,14 +197,14 @@ try {
     $cmd.ExecuteNonQuery() | Out-Null
     
     # 2. 寫入當事人 (Sellers / Buyers / Agent)
-    # 2.1 Sellers (義務人)
+    # 2.1 Sellers (義務人，PE00 寫入 '義')
     foreach ($s in $data.sellers) {
         $cmd = $conn.CreateCommand()
         $cmd.Transaction = $transaction
-        $cmd.CommandText = "INSERT INTO [Person] (ISNEED, GUID, PE00, PE01, PE02, PE03, PE04, PE05, PE06, PE07) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        $cmd.CommandText = "INSERT INTO [Person] ([ISNEED], [GUID], [PE00], [PE01], [PE02], [PE03], [PE04], [PE05], [PE06], [PE07]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
         $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
-        $cmd.Parameters.AddWithValue("pe00", "義務人") | Out-Null
+        $cmd.Parameters.AddWithValue("pe00", "義") | Out-Null
         $cmd.Parameters.AddWithValue("pe01", $s.name) | Out-Null
         $cmd.Parameters.AddWithValue("pe02", $s.id_number) | Out-Null
         $cmd.Parameters.AddWithValue("pe03", $s.birthday) | Out-Null
@@ -160,7 +218,7 @@ try {
         foreach ($l in $data.lands) {
             $cmd = $conn.CreateCommand()
             $cmd.Transaction = $transaction
-            $cmd.CommandText = "INSERT INTO [LandObtain] (ISNEED, GUID, LO01, LO02, LO03, LO04, LO05, LO06) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            $cmd.CommandText = "INSERT INTO [LandObtain] ([ISNEED], [GUID], [LO01], [LO02], [LO03], [LO04], [LO05], [LO06]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
             $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
             $cmd.Parameters.AddWithValue("lo01", $s.name) | Out-Null
@@ -173,14 +231,14 @@ try {
         }
     }
     
-    # 2.2 Buyers (權利人)
+    # 2.2 Buyers (權利人，PE00 寫入 '權')
     foreach ($b in $data.buyers) {
         $cmd = $conn.CreateCommand()
         $cmd.Transaction = $transaction
-        $cmd.CommandText = "INSERT INTO [Person] (ISNEED, GUID, PE00, PE01, PE02, PE03, PE04, PE05, PE06, PE07) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        $cmd.CommandText = "INSERT INTO [Person] ([ISNEED], [GUID], [PE00], [PE01], [PE02], [PE03], [PE04], [PE05], [PE06], [PE07]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
         $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
-        $cmd.Parameters.AddWithValue("pe00", "權利人") | Out-Null
+        $cmd.Parameters.AddWithValue("pe00", "權") | Out-Null
         $cmd.Parameters.AddWithValue("pe01", $b.name) | Out-Null
         $cmd.Parameters.AddWithValue("pe02", $b.id_number) | Out-Null
         $cmd.Parameters.AddWithValue("pe03", $b.birthday) | Out-Null
@@ -191,14 +249,14 @@ try {
         $cmd.ExecuteNonQuery() | Out-Null
     }
     
-    # 2.3 Agent (代理人/代書)
+    # 2.3 Agent (代理人/代書，PE00 寫入 '代')
     if ($data.agent_name) {
         $cmd = $conn.CreateCommand()
         $cmd.Transaction = $transaction
-        $cmd.CommandText = "INSERT INTO [Person] (ISNEED, GUID, PE00, PE01, PE02, PE03, PE04, PE05, PE06, PE07) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        $cmd.CommandText = "INSERT INTO [Person] ([ISNEED], [GUID], [PE00], [PE01], [PE02], [PE03], [PE04], [PE05], [PE06], [PE07]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
         $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
-        $cmd.Parameters.AddWithValue("pe00", "代理人") | Out-Null
+        $cmd.Parameters.AddWithValue("pe00", "代") | Out-Null
         $cmd.Parameters.AddWithValue("pe01", $data.agent_name) | Out-Null
         $cmd.Parameters.AddWithValue("pe02", $data.agent_id) | Out-Null
         $cmd.Parameters.AddWithValue("pe03", $data.agent_birthday) | Out-Null
@@ -213,14 +271,14 @@ try {
     foreach ($l in $data.lands) {
         $cmd = $conn.CreateCommand()
         $cmd.Transaction = $transaction
-        $cmd.CommandText = "INSERT INTO [Land] (ISNEED, GUID, LA01, LA02, LA03, LA04, LA05, LA06, LA07, LA08) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        $cmd.CommandText = "INSERT INTO [Land] ([ISNEED], [GUID], [LA01], [LA02], [LA03], [LA04], [LA05], [LA06], [LA07], [LA08]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
         $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
         $cmd.Parameters.AddWithValue("la01", $l.section) | Out-Null
         $cmd.Parameters.AddWithValue("la02", $l.land_number) | Out-Null
         $cmd.Parameters.AddWithValue("la03", $l.holding_str) | Out-Null
         $cmd.Parameters.AddWithValue("la04", "建") | Out-Null
-        $cmd.Parameters.AddWithValue("la05", $l.value_per_sqm.ToString()) | Out-Null
+        $cmd.Parameters.AddWithValue("la05", $l.value_per_sqm) | Out-Null
         $cmd.Parameters.AddWithValue("la06", $l.area) | Out-Null
         $cmd.Parameters.AddWithValue("la07", "") | Out-Null
         $cmd.Parameters.AddWithValue("la08", $l.total_price) | Out-Null
@@ -231,7 +289,7 @@ try {
     foreach ($b in $data.buildings) {
         $cmd = $conn.CreateCommand()
         $cmd.Transaction = $transaction
-        $cmd.CommandText = "INSERT INTO [Build] (ISNEED, GUID, BU01, BU02, BU03, BU04, BU05, BU06, BU07, BU08, BU09) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        $cmd.CommandText = "INSERT INTO [Build] ([ISNEED], [GUID], [BU01], [BU02], [BU03], [BU04], [BU05], [BU06], [BU07], [BU08], [BU09]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
         $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
         $cmd.Parameters.AddWithValue("bu01", $b.building_number) | Out-Null
@@ -245,11 +303,11 @@ try {
         $cmd.Parameters.AddWithValue("bu09", $b.holding_ratio) | Out-Null
         $cmd.ExecuteNonQuery() | Out-Null
         
-        # 寫入建物層次明細
+        # 寫入建物層次明細 (使用中括號包裹所有欄位名)
         foreach ($fl in $b.floors) {
             $cmd = $conn.CreateCommand()
             $cmd.Transaction = $transaction
-            $cmd.CommandText = "INSERT INTO [BuildDetail] (ISNEED, GUID, BD01, BD02, BD03, BD04) VALUES (?, ?, ?, ?, ?, ?)"
+            $cmd.CommandText = "INSERT INTO [BuildDetail] ([ISNEED], [GUID], [BD01], [BD02], [BD03], [BD04]) VALUES (?, ?, ?, ?, ?, ?)"
             $cmd.Parameters.AddWithValue("isneed", "Y") | Out-Null
             $cmd.Parameters.AddWithValue("guid", $guid) | Out-Null
             $cmd.Parameters.AddWithValue("bd01", $fl.level) | Out-Null
@@ -316,27 +374,26 @@ def parse_building_floors(details_str: str) -> list:
     """
     將層次面積明細解析為結構化樓層清單。
     例如：「一層 43.30, 二層 56.46, 騎樓 15.05...」
+    每個樓層代號必須截短為 1 個字元（例如 '一'、'二'）以配合 BuildDetail.BD01 的長度限制 (MaxLen: 1)。
     """
     floors = []
     if not details_str:
         return floors
     
-    # 支援逗號或分號分割
     parts = details_str.replace("，", ",").replace("；", ",").replace(";", ",").split(",")
     for p in parts:
         p_clean = p.strip()
         if not p_clean:
             continue
-        # 分離文字與數字 (例如 一層 43.30)
         items = p_clean.split()
         if len(items) >= 2:
             level = items[0]
             try:
                 area = float(items[1])
-                floors.append({"level": level, "area": str(area)})
+                floors.append({"level": format_to_len(level, 1), "area": format_to_len(str(area), 20)})
             except:
                 pass
         elif len(p_clean) > 0:
-            floors.append({"level": p_clean, "area": "0.0"})
+            floors.append({"level": format_to_len(p_clean, 1), "area": "0.0"})
             
     return floors

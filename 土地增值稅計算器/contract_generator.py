@@ -715,3 +715,369 @@ def generate_inventory_html(data: dict, contract_type: str = "買賣", contract_
 </html>
 """
     return html
+
+def generate_private_contract_html(data: dict, agent_info: dict = None, contract_type: str = "買賣", contract_date = None, price_type: str = "公告現值", custom_price: float = 0.0) -> str:
+    """
+    根據萃取與校對後的資料，產生不動產買賣/贈與私有契約書 (私契) HTML。
+    """
+    contract_date_str = format_date_to_taiwan(contract_date or datetime.date.today())
+    
+    sellers = data.get("sellers", [])
+    if not sellers and "seller" in data:
+        sellers = [data["seller"]]
+    buyers = data.get("buyers", [])
+    if not buyers and "buyer" in data:
+        buyers = [data["buyer"]]
+        
+    seller_names = "、".join([s.get("name", "") for s in sellers if s.get("name")]) or "________________"
+    buyer_names = "、".join([b.get("name", "") for b in buyers if b.get("name")]) or "________________"
+
+    lands = data.get("lands", [])
+    buildings = data.get("buildings", [])
+    
+    # 1. 土地明細
+    land_rows_html = ""
+    total_land_price = 0.0
+    for idx, land in enumerate(lands):
+        sec = land.get("section", "")
+        num = land.get("land_number", "")
+        area = float(land.get("area") or 0.0)
+        num_numerator = float(land.get("holding_numerator") or 1.0)
+        num_denominator = float(land.get("holding_denominator") or 1.0)
+        holding_ratio_str = f"{int(num_numerator)} 分之 {int(num_denominator)}" if num_denominator > 1 else "全部"
+        val_per_sqm = float(land.get("value_per_sqm") or 0.0)
+        ratio = num_numerator / num_denominator if num_denominator > 0 else 1.0
+        calculated_price = area * ratio * val_per_sqm
+        total_land_price += calculated_price
+        
+        land_rows_html += f"""
+        <tr>
+            <td style="border: 1px solid black; padding: 8px; text-align: center;">{idx+1}</td>
+            <td style="border: 1px solid black; padding: 8px;">{sec}段 {num}地號</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: center;">建</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: right;">{area:,.2f}</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: center;">{holding_ratio_str}</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: right;">{val_per_sqm:,.0f}</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: right;">{calculated_price:,.0f}</td>
+        </tr>
+        """
+
+    # 2. 建物明細
+    building_rows_html = ""
+    total_building_price = 0.0
+    for idx, b in enumerate(buildings):
+        b_num = b.get("building_number", "")
+        door = b.get("door_number", "")
+        land_site = b.get("land_number", "")
+        area_details = b.get("area_details", "")
+        total_area = float(b.get("total_area") or 0.0)
+        attached_area = b.get("attached_area", "")
+        num_numerator = float(b.get("holding_numerator") or 1.0)
+        num_denominator = float(b.get("holding_denominator") or 1.0)
+        holding_ratio_str = f"{int(num_numerator)} 分之 {int(num_denominator)}" if num_denominator > 1 else "全部"
+        val_eval = float(b.get("value_per_sqm") or 0.0)
+        total_building_price += val_eval
+        
+        building_rows_html += f"""
+        <tr>
+            <td style="border: 1px solid black; padding: 8px; text-align: center;">{idx+1}</td>
+            <td style="border: 1px solid black; padding: 8px;">{land_site}<br/>建號 {b_num}</td>
+            <td style="border: 1px solid black; padding: 8px;">{door}</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: right;">{total_area:,.2f}<br/><span style="font-size: 11px; color:#555;">({area_details})</span></td>
+            <td style="border: 1px solid black; padding: 8px;">{attached_area}</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: center;">{holding_ratio_str}</td>
+            <td style="border: 1px solid black; padding: 8px; text-align: right;">{val_eval:,.0f}</td>
+        </tr>
+        """
+        
+    total_calculated_price = total_land_price + total_building_price
+    if contract_type == "買賣" and price_type == "自訂買賣價":
+        final_price = custom_price
+    else:
+        final_price = total_calculated_price
+        
+    final_price_chinese = to_chinese_number(final_price)
+    
+    # 買賣與贈與的條款差異
+    price_clause_html = ""
+    payment_terms_html = ""
+    if contract_type == "買賣":
+        # 試算四期款
+        p1 = int(round(final_price * 0.1))
+        p2 = int(round(final_price * 0.1))
+        p3 = int(round(final_price * 0.1))
+        p4 = int(final_price - p1 - p2 - p3)
+        
+        p1_chinese = to_chinese_number(p1)
+        p2_chinese = to_chinese_number(p2)
+        p3_chinese = to_chinese_number(p3)
+        p4_chinese = to_chinese_number(p4)
+        
+        price_clause_html = f"""
+        <div class="clause">
+            <b>第二條：買賣價款</b><br/>
+            本案移轉土地及建物之買賣總價款經買賣雙方議定為新台幣：<b>【 {final_price_chinese}元整 】</b>（小寫：NT$ {final_price:,.0f} 元）。
+        </div>
+        """
+        payment_terms_html = f"""
+        <div class="clause">
+            <b>第三條：付款約定期程（預設按 1：1：1：7 比例支付，雙方得另行書面約定）</b><br/>
+            買受人應依下列約定期程將買賣價款支付予出賣人：<br/>
+            1. <b>第一期（簽約款）</b>：於本契約簽訂之同時，買受人支付新台幣 <b>{p1_chinese}元整</b>（NT$ {p1:,.0f} 元）。出賣人於簽章時確認收訖無誤。<br/>
+            2. <b>第二期（備證款）</b>：於出賣人備妥登記所需文件且申報印鑑證明之同時，買受人支付新台幣 <b>{p2_chinese}元整</b>（NT$ {p2:,.0f} 元）。<br/>
+            3. <b>第三期（完稅款）</b>：於土地增值稅及契稅稅單核發並經雙方確認之同時，買受人支付新台幣 <b>{p3_chinese}元整</b>（NT$ {p3:,.0f} 元），並繳納應負擔之稅費。<br/>
+            4. <b>第四期（尾款/交屋款）</b>：於本案產權移轉登記完畢且雙方辦理點交之同時，買受人支付新台幣 <b>{p4_chinese}元整</b>（NT$ {p4:,.0f} 元）。
+        </div>
+        """
+    else:  # 贈與
+        price_clause_html = f"""
+        <div class="clause">
+            <b>第二條：贈與標的價值及無償贈與</b><br/>
+            本案移轉標的係由贈與人（出賣人）無償贈與予受贈人（買受人），受贈人允受贈與。本案標的不動產之公告土地現值及房屋評定現值總價值共計新台幣：<b>【 {final_price_chinese}元整 】</b>（小寫：NT$ {final_price:,.0f} 元），作為印花稅、契稅、贈與稅之申報基礎。
+        </div>
+        """
+        payment_terms_html = f"""
+        <div class="clause">
+            <b>第三條：贈與履行與登記協力</b><br/>
+            贈與人應於本契約簽訂後，備妥產權登記所需之一切文件（包括權狀、印鑑證明、戶籍謄本等），並協同受贈人向地政事務所及稅捐稽徵機關申辦贈與所有權移轉登記，不得藉故拖延或撤銷。
+        </div>
+        """
+        
+    title = f"不動產{contract_type}契約書"
+    has_b = len(buildings) > 0
+    
+    # 簽章欄位
+    sign_rows_html = ""
+    for idx, s in enumerate(sellers):
+        identity = f"{'出賣人' if contract_type == '買賣' else '贈與人'}<br/>(義務人)" if idx == 0 else ""
+        sign_rows_html += f"""
+        <tr>
+            <td style="font-weight: bold; text-align: center; border: 1px solid black;">{identity}</td>
+            <td style="border: 1px solid black;">
+                <b>{s.get("name", "")}</b><br/>
+                <span style="color: #999; font-size: 11px;">(簽名蓋章/蓋印鑑章)</span>
+            </td>
+            <td style="text-align: center; border: 1px solid black;">{s.get("id_number", "")}</td>
+            <td style="text-align: center; border: 1px solid black;">{s.get("tel", "") or "________________"}</td>
+            <td style="border: 1px solid black;">{s.get("address", "")}</td>
+        </tr>
+        """
+    for idx, b in enumerate(buyers):
+        identity = f"{'買受人' if contract_type == '買賣' else '受贈人'}<br/>(權利人)" if idx == 0 else ""
+        sign_rows_html += f"""
+        <tr>
+            <td style="font-weight: bold; text-align: center; border: 1px solid black;">{identity}</td>
+            <td style="border: 1px solid black;">
+                <b>{b.get("name", "")}</b><br/>
+                <span style="color: #999; font-size: 11px;">(簽名蓋章/蓋用印章)</span>
+            </td>
+            <td style="text-align: center; border: 1px solid black;">{b.get("id_number", "")}</td>
+            <td style="text-align: center; border: 1px solid black;">{b.get("tel", "") or "________________"}</td>
+            <td style="border: 1px solid black;">{b.get("address", "")}</td>
+        </tr>
+        """
+        
+    # 地政士（代理人）簽章
+    agent_info = agent_info or {}
+    agent_row_html = ""
+    if agent_info.get("name"):
+        agent_row_html = f"""
+        <tr>
+            <td style="font-weight: bold; text-align: center; border: 1px solid black;">見證地政士<br/>(代理人)</td>
+            <td style="border: 1px solid black;">
+                <b>{agent_info.get("name", "")}</b><br/>
+                <span style="color: #999; font-size: 11px;">(簽名蓋章)</span>
+            </td>
+            <td style="text-align: center; border: 1px solid black;">{agent_info.get("id_number", "")}</td>
+            <td style="text-align: center; border: 1px solid black;">{agent_info.get("tel", "")}</td>
+            <td style="border: 1px solid black;">{agent_info.get("address", "")}</td>
+        </tr>
+        """
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>不動產{contract_type}契約書(私契)</title>
+    <style>
+        body {{
+            font-family: "標楷體", "DFKai-SB", "Microsoft JhengHei", sans-serif;
+            line-height: 1.6;
+            margin: 40px auto;
+            max-width: 800px;
+            color: #000;
+        }}
+        .header {{
+            text-align: center;
+            font-size: 26px;
+            font-weight: bold;
+            margin-bottom: 25px;
+            letter-spacing: 4px;
+        }}
+        .subheader {{
+            text-align: center;
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 30px;
+            color: #444;
+        }}
+        .clause {{
+            font-size: 15px;
+            margin-top: 15px;
+            text-indent: -2em;
+            margin-left: 2em;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 14px;
+        }}
+        th, td {{
+            border: 1px solid #000;
+            padding: 6px;
+        }}
+        th {{
+            background-color: #f2f2f2;
+            text-align: center;
+        }}
+        .sign-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }}
+        .sign-table td {{
+            height: 50px;
+            vertical-align: top;
+        }}
+        .footer-date {{
+            text-align: right;
+            font-size: 16px;
+            margin-top: 35px;
+            font-weight: bold;
+        }}
+        .note {{
+            font-size: 12px;
+            color: #666;
+            margin-top: 25px;
+            border-top: 1px dashed #ccc;
+            padding-top: 10px;
+        }}
+    </style>
+</head>
+<body>
+
+    <div class="header">不動產{contract_type}契約書</div>
+    <div class="subheader">(私有契約憑證 / 私契)</div>
+    
+    <div style="text-align: right; font-weight: bold; margin-bottom: 20px; font-size: 15px;">
+        契約當事人：{'受贈人' if contract_type == '贈與' else '買受人'}(買方) {buyer_names} <br/>
+        契約當事人：{'贈與人' if contract_type == '贈與' else '出賣人'}(賣方) {seller_names}
+    </div>
+
+    <div class="clause">
+        立契約書人雙方同意就下列不動產進行{'贈與' if contract_type == '贈與' else '買賣'}所有權移轉事宜，特立本契約書以資共同遵守：
+    </div>
+
+    <div class="clause">
+        <b>第一條：移轉標的及範圍</b><br/>
+        {'出賣人' if contract_type == '買賣' else '贈與人'}同意將其所有之下列土地及建物之全部或一部所有權移轉予{'買受人' if contract_type == '買賣' else '受贈人'}：
+    </div>
+
+    <div style="font-weight: bold; margin-top: 12px; font-size: 14px;">一、土地部分明細：</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 5%;">序號</th>
+                <th style="width: 35%;">土地坐落（段、地號）</th>
+                <th style="width: 8%;">地目</th>
+                <th style="width: 12%;">面積 (㎡)</th>
+                <th style="width: 15%;">移轉持分範圍</th>
+                <th style="width: 12%;">公告現值 (元/㎡)</th>
+                <th style="width: 13%;">土地總值 (元)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {land_rows_html}
+        </tbody>
+    </table>
+"""
+
+    if has_b:
+        html += f"""
+    <div style="font-weight: bold; margin-top: 12px; font-size: 14px;">二、建物部分明細：</div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 5%;">序號</th>
+                <th style="width: 25%;">建物坐落及建號</th>
+                <th style="width: 25%;">門牌號碼</th>
+                <th style="width: 15%;">主建物面積 (㎡)</th>
+                <th style="width: 12%;">附屬建物</th>
+                <th style="width: 10%;">移轉持分</th>
+                <th style="width: 13%;">評定現值 (元)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {building_rows_html}
+        </tbody>
+    </table>
+"""
+
+    html += f"""
+    {price_clause_html}
+
+    {payment_terms_html}
+
+    <div class="clause">
+        <b>第四條：產權保證與瑕疵擔保</b><br/>
+        出賣人擔保本契約不動產點交前，產權清楚，並無任何糾紛或設定抵押權、質權等第三人權利主張之情事。若有抵押債務，出賣人應負責於登記前清理完畢，如有涉訟或任何產權糾紛，出賣人應無條件排除之。
+    </div>
+
+    <div class="clause">
+        <b>第五條：稅費負擔分配</b><br/>
+        除雙方另有約定外，依地政登記之通常慣例：<br/>
+        1. <b>出賣人（贈與人）負擔</b>：土地增值稅、產權移轉前之地價稅及房屋稅、抵押權塗銷登記規費。<br/>
+        2. <b>買受人（受贈人）負擔</b>：契稅、登記規費、申報及登記代理人（代書）服務費、印花稅。<br/>
+        3. <b>雙方各自負擔</b>：各自之契約憑證印花稅。如屬贈與案件，贈與稅由贈與人依規定申報繳納。
+    </div>
+
+    <div class="clause">
+        <b>第六條：違約及解除契約</b><br/>
+        若買受人逾期不履行付款義務，每逾一日應加付已收價款萬分之五之違約金；若買受人違約情節重大，出賣人得解除契約並沒收已付價金。若出賣人拒不履行過戶登記或點交義務，受買人得解除契約並要求出賣人加倍返還已付價金。
+    </div>
+
+    <div class="clause">
+        <b>第七條：管轄法院</b><br/>
+        因本契約所生之爭議，雙方同意以本不動產所在地之台灣地方法院為第一審管轄法院。本契約一式二份，由買賣雙方各執一份為憑。
+    </div>
+
+    <div style="margin-top: 30px; font-weight: bold; font-size: 15px;">
+        立契約人基本資訊及簽章：
+    </div>
+
+    <table class="sign-table">
+        <tr>
+            <th style="width: 15%;">身份別</th>
+            <th style="width: 20%;">姓名與簽章</th>
+            <th style="width: 18%;">統一編號</th>
+            <th style="width: 15%;">聯絡電話</th>
+            <th style="width: 32%;">戶籍地址</th>
+        </tr>
+        {sign_rows_html}
+        {agent_row_html}
+    </table>
+
+    <div class="footer-date">
+        立契約日期：{contract_date_str}
+    </div>
+
+    <div class="note">
+        ※ 說明：此私契（私有契約書）由本系統自動彙整，下載後為 HTML 格式，使用 Microsoft Word 開啟即可編輯、排版或直接列印使用。
+    </div>
+
+</body>
+</html>
+"""
+    return html
+

@@ -17,7 +17,7 @@ try:
     import extractor
     importlib.reload(extractor)
     from extractor import GeminiExtractor
-    from contract_generator import generate_contract_html, format_date_to_taiwan, generate_application_html, generate_inventory_html
+    from contract_generator import generate_contract_html, format_date_to_taiwan, generate_application_html, generate_inventory_html, generate_private_contract_html
     from tax_file_generator import generate_tax_zip, safe_float, safe_int
 except Exception as e:
     import traceback
@@ -582,8 +582,96 @@ with tab4:
     st.header("✍️ 土地所有權移轉契約書智能生成")
     st.markdown("上傳您的土地登記謄本、出賣人（義務人）與買受人（權利人）的身分證件。AI 將自動辨識雙方姓名、身分證字號、住所與土地標示，套入符合地政官方格式的契約書，並提供下載 Word（HTML相容）格式的契約檔案。")
     
-    if not st.session_state.api_key:
+    if not st.session_state.api_key and "generated_contract_html" not in st.session_state:
         st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
+        st.markdown("---")
+        st.markdown("### 🧪 系統功能測試面板 (免 API Key)")
+        st.info("如果您目前沒有 Gemini API Key，可以點擊下方按鈕直接載入一組模擬案件謄本與身份證資料，以測試契約、報稅與申請書等生成與編輯功能。")
+        if st.button("🚀 載入模擬案件資料進行功能測試"):
+            mock_data = {
+                "sellers": [
+                    {
+                        "name": "陳大文",
+                        "id_number": "A123456789",
+                        "birthday": "民國 50年5月5日",
+                        "address": "台北市大安區新生南路一段1號",
+                        "prev_holding_numerator": 1.0,
+                        "prev_holding_denominator": 2.0,
+                        "prev_year_month": "11005",
+                        "prev_value_per_sqm": 25000.0,
+                        "tel": "0212345678"
+                    }
+                ],
+                "buyers": [
+                    {
+                        "name": "李小美",
+                        "id_number": "F223456789",
+                        "birthday": "民國 80年10月10日",
+                        "address": "新北市板橋區文化路一段1號",
+                        "holding_numerator": 1.0,
+                        "holding_denominator": 1.0,
+                        "zip": "220",
+                        "tel": "0287654321"
+                    }
+                ],
+                "lands": [
+                    {
+                        "section": "順和段",
+                        "land_number": "0151-0000",
+                        "area": 120.5,
+                        "value_per_sqm": 45000.0,
+                        "holding_numerator": 1.0,
+                        "holding_denominator": 2.0
+                    }
+                ],
+                "buildings": [
+                    {
+                        "building_number": "183",
+                        "door_number": "龍井區三港路水裡港巷68之16號",
+                        "land_number": "田水段 859-23地號",
+                        "total_area": 124.7,
+                        "attached_area": "陽台 2.42",
+                        "holding_numerator": 1.0,
+                        "holding_denominator": 1.0,
+                        "area_details": "一層 43.30, 二層 56.46, 騎樓 15.05"
+                    }
+                ]
+            }
+            agent_info = {
+                "name": "張培聰",
+                "id_number": "L102769057",
+                "birthday": "民國 41.8.13",
+                "tel": "0423591548",
+                "address": "台中市西屯區工業區38路92號",
+                "zip": "407",
+                "hsn": "B",
+                "org": "49",
+                "town": "06"
+            }
+            st.session_state.extracted_contract_data = mock_data
+            st.session_state.detected_county = "台中市 (B)"
+            st.session_state.detected_town = "西屯區 (06)"
+            st.session_state.detected_org = "文心分局 (49)"
+            
+            st.session_state.generated_contract_html = generate_contract_html(
+                data=mock_data,
+                contract_type="買賣",
+                contract_date=datetime.date.today(),
+                price_type="公告現值自動計算",
+                custom_price=0.0
+            )
+            st.session_state.generated_private_contract_html = generate_private_contract_html(
+                data=mock_data,
+                agent_info=agent_info,
+                contract_type="買賣",
+                contract_date=datetime.date.today(),
+                price_type="公告現值自動計算",
+                custom_price=0.0
+            )
+            st.rerun()
+    elif not st.session_state.api_key and "generated_contract_html" in st.session_state:
+        # 已有測試資料，直接走後面渲染流程
+        pass
     else:
         st.markdown("### 1. 上傳檔案 (支援 PDF 或圖檔，可分開上傳)")
         col_c1, col_c2, col_c3, col_c4 = st.columns(4)
@@ -700,6 +788,14 @@ with tab4:
                         
                     st.session_state.generated_contract_html = generate_contract_html(
                         data=extracted_data,
+                        contract_type=contract_reason,
+                        contract_date=contract_date,
+                        price_type=price_type,
+                        custom_price=custom_price
+                    )
+                    st.session_state.generated_private_contract_html = generate_private_contract_html(
+                        data=extracted_data,
+                        agent_info=agent_info,
                         contract_type=contract_reason,
                         contract_date=contract_date,
                         price_type=price_type,
@@ -1051,6 +1147,14 @@ with tab4:
                     price_type=price_type,
                     custom_price=custom_price
                 )
+                st.session_state.generated_private_contract_html = generate_private_contract_html(
+                    data=data,
+                    agent_info=agent_info,
+                    contract_type=contract_reason,
+                    contract_date=contract_date,
+                    price_type=price_type,
+                    custom_price=custom_price
+                )
 
             # 計算預覽與印花稅資訊
             total_contract_price = 0.0
@@ -1161,16 +1265,26 @@ with tab4:
                         """)
                         
             # 下載按鈕區域
-            st.markdown("### 📥 申報檔案與公契下載")
-            col_dl1, col_dl2 = st.columns(2)
+            st.markdown("### 📥 申報檔案與公私契下載")
+            col_dl1, col_dl_p, col_dl2 = st.columns(3)
             with col_dl1:
-                # 產出土地所有權移轉契約書 HTML
+                # 產出土地所有權移轉契約書 HTML (公契)
                 has_b = len(data.get("buildings", [])) > 0
-                file_name = f"土地{'建物' if has_b else ''}{contract_reason}所有權移轉契約書.html"
+                file_name = f"土地{'建物' if has_b else ''}{contract_reason}所有權移轉契約書_公契.html"
                 st.download_button(
-                    label=f"📥 下載土地{'建物' if has_b else ''}{contract_reason}移轉契約書 (A4 Word 格式)",
+                    label=f"📥 下載所有權移轉契約書 (公契 Word)",
                     data=st.session_state.generated_contract_html,
                     file_name=file_name,
+                    mime="text/html",
+                    use_container_width=True
+                )
+            with col_dl_p:
+                # 產出私契 HTML (私契)
+                file_name_p = f"不動產{contract_reason}契約書_私契.html"
+                st.download_button(
+                    label=f"📥 下載不動產{contract_reason}契約書 (私契 Word)",
+                    data=st.session_state.generated_private_contract_html,
+                    file_name=file_name_p,
                     mime="text/html",
                     use_container_width=True
                 )
@@ -1198,6 +1312,13 @@ with tab4:
                     )
                 except Exception as e_zip:
                     st.error(f"無法產生報稅檔案：{str(e_zip)}")
+
+            # 加上大批網路申報匯入引導說明
+            st.info("""💡 **地方稅大批申報網報匯入檔 (.zip) 使用說明：**
+1. 下載上方的 `.zip` 檔案（內部已打包好符合官方格式的 Big5 編碼 **`HEADER` 標頭檔**與 **`AVM001` 內文申報檔**）。
+2. 登入「[地方稅網路申報作業入口網](https://nettax.nat.gov.tw/)」。
+3. 進入「土地增值稅」申報專區，點選 **「大批申報匯入」**。
+4. 選擇上傳剛才下載的 `.zip` 檔案，系統便會自動解析標頭與內文，一次填妥所有買賣雙方姓名、地址、地號、持分，以及**每個義務人的前次移轉年月與現值**，完全免去重複輸入！""")
             
             # 土地登記申請書 與 登記清冊 下載
             col_dl3, col_dl4 = st.columns(2)
