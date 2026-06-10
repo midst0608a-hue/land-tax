@@ -8,6 +8,51 @@ class GeminiExtractor:
     def __init__(self, api_key: str):
         self.api_key = api_key
         
+    def _call_gemini_with_retry(self, client, model: str, contents: list, max_retries: int = 5) -> str:
+        """
+        呼叫 Gemini API，並在遭遇 503, 429 或其他暫時性服務不可用/超時的錯誤時，
+        進行指數退避 (exponential backoff) 重試。
+        """
+        import random
+        
+        delay = 2.0  # 初始等待 2 秒
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents
+                )
+                return response.text
+            except Exception as e:
+                last_exception = e
+                err_msg = str(e).upper()
+                
+                # 判斷是否為暫時性錯誤 (如: 503 Unavailable, 429 Rate Limit/Resource Exhausted, 或者包含 high demand 等說明)
+                is_transient = any(
+                    indicator in err_msg 
+                    for indicator in [
+                        "503", "429", "RESOURCE_EXHAUSTED", "UNAVAILABLE", 
+                        "HIGH DEMAND", "TEMPORARY", "SPIKE", "OVERLOADED", 
+                        "RATE_LIMIT", "QUOTA"
+                    ]
+                )
+                
+                # 如果不是明確的暫時性錯誤，且已經試了 2 次，就不再浪費時間重試，直接拋出
+                if not is_transient and attempt >= 2:
+                    raise e
+                
+                if attempt < max_retries - 1:
+                    # 加入隨機擾動 (jitter) 避免多個請求同時重試
+                    sleep_time = delay + random.uniform(0, 1)
+                    time.sleep(sleep_time)
+                    delay *= 2  # 指數級增加等待時間
+                else:
+                    break
+                    
+        raise last_exception
+
     def _get_prompt(self):
         return """
         你是一個專業的台灣不動產與身分證件資料萃取助理。
@@ -96,7 +141,8 @@ class GeminiExtractor:
             
             # 直接使用 gemini-2.5-flash (因 1.5 版已退役)
             try:
-                response = client.models.generate_content(
+                response_text = self._call_gemini_with_retry(
+                    client=client,
                     model='gemini-2.5-flash',
                     contents=[file_info, prompt]
                 )
@@ -104,7 +150,7 @@ class GeminiExtractor:
                 # 不再盲目降級到 1.5-pro，直接回傳真實的錯誤訊息
                 return {"error": f"Gemini 2.5 Flash 生成內容時發生錯誤：{str(e_flash)}"}
                 
-            return self._parse_response(response.text)
+            return self._parse_response(response_text)
             
         except Exception as e:
             return {"error": f"API 發生錯誤：請確認 API Key 是否有效。詳細錯誤：{str(e)}"}
@@ -207,102 +253,45 @@ class GeminiExtractor:
 
                 uploaded_manual = client.files.upload(
                     file=upload_manual_path, 
-                    config={'mime_type': manual_mime}
-                )
-                # 等待檔案處理完成
-                while True:
-                    manual_info = client.files.get(name=uploaded_manual.name)
-                    m_state_str = str(manual_info.state)
-                    if "ACTIVE" in m_state_str:
-                        break
-                    elif "FAILED" in m_state_str:
-                        return {"error": f"審查手冊檔案處理失敗 (狀態: {m_state_str})"}
-                    time.sleep(2)
-                contents.append(manual_info)
-                
-            # 3. 組合 Prompt
-            prompt = f"""
-            你是一個專業的台灣地政事務所登記課審查人員 (地政登記審查官)。
-            請根據使用者提供的案件背景描述，審查上傳的公文/文件影像或 PDF 是否合規。
-            
-            【案件背景描述】：
-            {case_desc}
-            
-            【你的審查任務】：
-            1. 辨識上傳的文件內容 (包含地號、所有權人、統一編號、地址、持分範圍、申報現值、委任代理人資訊、簽章用印欄位、修正塗改)。
-            2. 比對文件與地政審查規範（或自訂審查手冊，如有提供），分析文件填寫是否有錯誤、漏填或不一致之處。
-            3. 以 Markdown 格式輸出詳細的預審報告，列出比對結果、風險提示與修正建議。
-            """
-            
-            contents.append(prompt)
-            
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=contents
-            )
-            return {"success": True, "report": response.text}
-            
-        except Exception as e:
-            return {"error": f"審查失敗：{str(e)}"}
-        finally:
-            # 清理雲端暫存檔
-            if uploaded_doc:
-                try:
-                    client.files.delete(name=uploaded_doc.name)
-                except:
-                    pass
-            if uploaded_manual:
-                try:
-                    client.files.delete(name=uploaded_manual.name)
-                except:
-                    pass
-            # 清理本機暫存檔
-            if temp_doc_ascii and os.path.exists(temp_doc_ascii):
-                try:
-                    os.remove(temp_doc_ascii)
-                except:
-                    pass
-            if temp_manual_ascii and os.path.exists(temp_manual_ascii):
-                try:
-                    os.remove(temp_manual_ascii)
-                except:
-                    pass
-
-    def process_contract_extraction(self, 
+                      def process_contract_extraction(self, 
                                    land_doc_path: str = None, land_doc_mime: str = None,
                                    building_doc_paths: list = None, building_doc_mimes: list = None,
                                    seller_id_paths: list = None, seller_id_mimes: list = None,
                                    buyer_id_paths: list = None, buyer_id_mimes: list = None,
                                    seller_id_path: str = None, seller_id_mime: str = None,
-                                   buyer_id_path: str = None, buyer_id_mime: str = None):
+                                   buyer_id_path: str = None, buyer_id_mime: str = None,
+                                   doc_paths: list = None, doc_mimes: list = None):
         """
-        上傳土地及建物登記謄本與雙方多份身分證，利用 Gemini 2.5 Flash 進行資料萃取，對齊公契與報稅所需欄位。
+        上傳多個檔案（謄本及身分證件），利用 Gemini 2.5 Flash 進行資料萃取，對齊公契與報稅所需欄位。
         """
         client = genai.Client(api_key=self.api_key)
         uploaded_files = []
         temp_ascii_paths = []
         contents = []
         
-        # 相容單一路徑傳入
-        if seller_id_paths is None:
-            seller_id_paths = [seller_id_path] if seller_id_path else []
-        if seller_id_mimes is None:
-            seller_id_mimes = [seller_id_mime] if seller_id_mime else []
-        if buyer_id_paths is None:
-            buyer_id_paths = [buyer_id_path] if buyer_id_path else []
-        if buyer_id_mimes is None:
-            buyer_id_mimes = [buyer_id_mime] if buyer_id_mime else []
-        if building_doc_paths is None:
-            building_doc_paths = []
-        if building_doc_mimes is None:
-            building_doc_mimes = []
-            
-        try:
-            import shutil
-            import tempfile
-            
-            # 動態建立要上傳與處理的檔案清單
-            files_to_process = []
+        # 動態建立要上傳與處理的檔案清單
+        files_to_process = []
+        
+        if doc_paths is not None:
+            # 優先使用整合上傳的檔案清單
+            for idx, (path, mime) in enumerate(zip(doc_paths, doc_mimes)):
+                if path and mime:
+                    files_to_process.append((f"doc_{idx}", path, mime))
+        else:
+            # 向後相容單一類別的舊參數
+            if seller_id_paths is None:
+                seller_id_paths = [seller_id_path] if seller_id_path else []
+            if seller_id_mimes is None:
+                seller_id_mimes = [seller_id_mime] if seller_id_mime else []
+            if buyer_id_paths is None:
+                buyer_id_paths = [buyer_id_path] if buyer_id_path else []
+            if buyer_id_mimes is None:
+                buyer_id_mimes = [buyer_id_mime] if buyer_id_mime else []
+            if building_doc_paths is None:
+                building_doc_paths = []
+            if building_doc_mimes is None:
+                building_doc_mimes = []
+                
             if land_doc_path and land_doc_mime:
                 files_to_process.append(("land_doc", land_doc_path, land_doc_mime))
                 
@@ -317,6 +306,10 @@ class GeminiExtractor:
             for idx, (path, mime) in enumerate(zip(buyer_id_paths, buyer_id_mimes)):
                 if path and mime:
                     files_to_process.append((f"buyer_id_{idx}", path, mime))
+            
+        try:
+            import shutil
+            import tempfile
             
             for key, path, mime in files_to_process:
                 if path and mime:
@@ -356,8 +349,7 @@ class GeminiExtractor:
                 return {
                     "success": True,
                     "data": {
-                        "sellers": [],
-                        "buyers": [],
+                        "people": [],
                         "lands": [],
                         "buildings": []
                     }
@@ -367,12 +359,80 @@ class GeminiExtractor:
             你是一個專業的台灣地政登記案件資料萃取助理。
             請從上傳的所有文件中（包含土地登記謄本、建物登記謄本、身分證影本等），精確萃取所有相關人、土地與建物資訊，以供填寫「土地建物所有權移轉契約書 (公契)」、「土地登記申請書」與「登記清冊」之用。
             
-            【特別指示：複數當事人與身分證辨識】
-            1. 出賣人 (義務人) 身分證件：上傳的身分證影像中可能包含多位不同出賣人，或同一檔案有多個頁面。請完整萃取「所有」出賣人的資料，並將每個人獨立作為一個物件，填入 `sellers` 陣列中。
-            2. 買受人 (權利人) 身分證件：同樣地，上傳的買受人身分證件可能有多人，請完整萃取「所有」買受人的資料，填入 `buyers` 陣列中。
-            3. 若有上傳土地登記謄本，請從所有權部中核對所有權人姓名：
-               - 身分證名字與謄本所有權人姓名完全一致者，屬於「出賣人（義務人）」。
-               - 身分證名字與謄本所有權人不同的身分證，屬於「買受人（權利人）/ 受贈人」。
+            【特別指示：當事人身分證與謄本辨識】
+            1. 請完整辨識並萃取所有文件（包含身分證件與謄本）中出現的所有自然人，將每個人獨立作為一個物件，填入 `people` 陣列中。
+            2. 請盡可能辨識每個人的姓名、身分證統一編號、出生年月日與戶籍地址。
+            3. 如果文件中含有前次移轉現值申報資訊（通常出現在土地登記謄本之所有權部），請擷取該所有權人取得該土地時的「前次移轉年月」（民國格式，如 10704，代表107年4月）、「前次移轉現值」（單價，僅數字）、以及取得該持分時的「持分分子/分母」。
+            
+            【特別指示：針對建物登記謄本】
+            如果上傳的檔案包含「建物登記謄本」，請務必擷取以下資訊並填入 `buildings` 陣列中：
+            - 建號：例如「183」或「00183-000」
+            - 門牌：例如「龍井區三港路水裡港巷68之16號」
+            - 主要用途：例如「住家用」或「商業用」
+            - 基地坐落地號：例如「田水段 859-23地號」
+            - 層次與面積：各樓層面積，例如「一層 43.30, 二層 56.46, 騎樓 15.05... 共計 124.71」
+            - 附屬建物：用途與面積，例如「陽台 2.42」
+            - 移轉權利範圍：持分分子/分母，例如「1/1」
+            - 房屋現值（評定現值）：如果文件中含有課稅現值或房屋評定現值（若無則為 0）
+            - 備註：例如「公同共有」或空白
+            
+            請以嚴格的 JSON 格式回傳，且必須符合以下 JSON 結構：
+            {
+              "people": [
+                {
+                  "name": "姓名",
+                  "id_number": "統一編號（身分證字號）",
+                  "birthday": "出生年月日，請轉換為民國年格式，例如：民國50年10月12日",
+                  "address": "戶籍地址",
+                  "prev_year_month": "前次移轉年月（民國格式，如 10704，若沒有則預設 10704）",
+                  "prev_value_per_sqm": "前次移轉現值，僅數字（元/平方公尺，若沒有則預設 19000）",
+                  "prev_holding_numerator": "前次移轉持分分子，僅數字（若沒有則預設 1）",
+                  "prev_holding_denominator": "前次移轉持分分母，僅數字（若沒有則預設 2）"
+                }
+              ],
+              "lands": [
+                {
+                  "section": "地段名稱，例如：順和段",
+                  "land_number": "地號，例如：0151-0000",
+                  "area": "面積，僅填寫數字（單位為平方公尺），例如：679.07",
+                  "holding_numerator": "移轉權利範圍（持分分子），僅數字，例如 1",
+                  "holding_denominator": "移轉權利範圍（持分分母），僅數字，例如 1",
+                  "value_per_sqm": "公告地段現值，僅填寫數字，例如：4160"
+                }
+              ],
+              "buildings": [
+                {
+                  "building_number": "建號，例如：183",
+                  "door_number": "門牌地址，例如：龍井區三港路水裡港巷68之16號",
+                  "land_number": "基地坐落地號，例如：田水段 859-23地號",
+                  "area_details": "層次面積明細，例如：一層 43.30, 二層 56.46, 騎樓 15.05",
+                  "total_area": "主建物總面積，僅填寫數字，例如：124.7",
+                  "attached_area": "附屬建物明細，例如：陽台 2.42",
+                  "holding_numerator": "移轉持分分子，僅數字，例如：1",
+                  "holding_denominator": "移轉持分分母，僅數字，例如：1",
+                  "value_per_sqm": "評定現值，僅填寫數字，若無則填 0",
+                  "remarks": "備註，例如：公同共有"
+                }
+              ]
+            }
+            
+            請不要包含 any Markdown 標記 (如 ```json) 或是其他多餘的說明文字。
+            如果某個檔案未提供，或某個欄位在文件中確實找不到，請填寫空字串 ""。
+            """
+            
+            contents.append(prompt)
+            
+            # 呼叫 Gemini 2.5 Flash
+            response_text = self._call_gemini_with_retry(
+                client=client,
+                model='gemini-2.5-flash',
+                contents=contents
+            )
+            
+            return self._parse_response(response_text)
+            
+        except Exception as e:
+            return {"error": f"資料萃取失敗：{str(e)}"}�不同的身分證，屬於「買受人（權利人）/ 受贈人」。
                - 若未上傳土地謄本，僅有身分證，請直接依據上傳類別（出賣人證件為 sellers，買受人證件為 buyers）進行填寫。
             4. 前次移轉現值申報資訊 (出賣人)：
                - 請從土地登記謄本之所有權部（「前次移轉現值」或「歷次取得權利範圍」欄位）中，擷取該出賣人（所有權人）取得該土地時的「前次移轉年月」（格式如民國年月：10704，代表107年4月）、「前次移轉現值（單價）」（格式如：19000）、以及取得該持分時的「持分分子/分母」。
@@ -447,12 +507,13 @@ class GeminiExtractor:
             contents.append(prompt)
             
             # 呼叫 Gemini 2.5 Flash
-            response = client.models.generate_content(
+            response_text = self._call_gemini_with_retry(
+                client=client,
                 model='gemini-2.5-flash',
                 contents=contents
             )
             
-            return self._parse_response(response.text)
+            return self._parse_response(response_text)
             
         except Exception as e:
             return {"error": f"資料萃取失敗：{str(e)}"}
