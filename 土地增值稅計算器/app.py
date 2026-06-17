@@ -496,7 +496,11 @@ with tab2:
                     formatted_text = ""
                     for i, record in enumerate(data_list):
                         formatted_text += f"【紀錄 {i+1}】\n"
-                        keys_order = ["地號", "面積", "持分", "現值", "所有權人", "統一編號", "前次移轉現值", "歷次取得範圍", "地址"]
+                        keys_order = [
+                            "地號", "建號", "門牌", "面積", "持分", "現值", "所有權人", "統一編號", "出生年月日",
+                            "主要用途", "主要建材", "建築完成日期", "層次與面積", 
+                            "主建物總面積", "附屬建物用途與面積", "前次移轉現值", "歷次取得範圍", "地址"
+                        ]
                         
                         for key in keys_order:
                             if key in record and record[key]:
