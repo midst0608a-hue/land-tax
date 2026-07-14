@@ -556,104 +556,127 @@ with tab2:
     if not st.session_state.api_key:
         st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
     else:
-        uploaded_file2 = st.file_uploader("請上傳圖檔或 PDF", type=["pdf", "jpg", "jpeg", "png"], key="extractor_up")
-        if uploaded_file2 is not None:
-            # 建立快取鍵值
-            current_file_key = f"{uploaded_file2.name}_{uploaded_file2.size}"
+        # 初始化快取字典，鍵為 file_key (檔名_大小)，值為 {"filename": name, "data": [...] }
+        if "tab2_extractor_results" not in st.session_state:
+            st.session_state.tab2_extractor_results = {}
             
-            # 檢查是否已有該檔案的快取結果
-            cached_key = st.session_state.get("tab2_extractor_file_key")
-            cached_result = st.session_state.get("tab2_extractor_result")
-            cached_model = st.session_state.get("tab2_extractor_model_used")
-            
-            # 模型選擇狀態
+        uploaded_files2 = st.file_uploader(
+            "請上傳圖檔或 PDF (可上傳多個檔案陸續辨識)", 
+            type=["pdf", "jpg", "jpeg", "png"], 
+            accept_multiple_files=True, 
+            key="extractor_up"
+        )
+        
+        # 控制按鈕與提示欄
+        col_ctrl1, col_ctrl2 = st.columns([8, 2])
+        with col_ctrl2:
+            if st.button("🗑️ 清除所有紀錄", use_container_width=True):
+                st.session_state.tab2_extractor_results = {}
+                st.rerun()
+                
+        # 當有上傳檔案時，逐一檢查並辨識尚未處理的檔案
+        if uploaded_files2:
             current_model = st.session_state.get("selected_model", "gemini-2.5-flash")
             
-            # 判斷是否需要重新執行 (檔案變更，或是模型變更，或是快取不存在)
-            need_run = False
-            if cached_key != current_file_key or cached_result is None or cached_model != current_model:
-                need_run = True
+            for uploaded_file2 in uploaded_files2:
+                current_file_key = f"{uploaded_file2.name}_{uploaded_file2.size}"
                 
-            # 提供手動重新萃取的按鈕與模型狀態提示
-            col1, col2 = st.columns([2, 8])
-            with col1:
-                if st.button("🔄 重新萃取", use_container_width=True):
-                    need_run = True
-            with col2:
-                st.markdown(f"<div style='padding-top: 5px; color: #555;'><small>目前使用模型：<code>{current_model}</code></small></div>", unsafe_allow_html=True)
-                
-            if need_run:
-                if 'temp_dir' not in st.session_state:
-                    st.session_state.temp_dir = tempfile.mkdtemp()
-                
-                # 解決非英文檔名問題：重新命名為安全檔名 extract_temp.{ext}，避免 Gemini API 上傳或讀取時編碼錯誤
-                file_ext = uploaded_file2.name.split(".")[-1].lower()
-                safe_filename = f"extract_temp.{file_ext}"
-                file_path = os.path.join(st.session_state.temp_dir, safe_filename)
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file2.getbuffer())
-                
-                st.info("🤖 AI 正在努力閱讀並萃取資料中，請稍候 (約需 5~15 秒)...")
-                
-                # 初始化 extractor 並帶入選擇的模型
-                extractor = GeminiExtractor(
-                    api_key=st.session_state.api_key,
-                    model_name=current_model
-                )
-                
-                with st.spinner("解析中..."):
-                    if file_ext == "pdf":
-                        result = extractor.process_pdf(file_path)
-                    else:
-                        result = extractor.process_image(file_path)
-                        
-                # 只有當沒有發生 429 或其他網路暫時性錯誤時，才快取結果
-                if "error" in result and ("429" in result["error"] or "RESOURCE_EXHAUSTED" in result["error"]):
-                    # 429 不快取
-                    pass
-                else:
-                    st.session_state.tab2_extractor_file_key = current_file_key
-                    st.session_state.tab2_extractor_result = result
-                    st.session_state.tab2_extractor_model_used = current_model
-            else:
-                # 從快取讀取
-                result = cached_result
-                
-            if "error" in result:
-                st.error(f"❌ 發生錯誤：{result['error']}")
-                if "raw" in result:
-                    with st.expander("查看原始 AI 回覆"):
-                        st.text(result["raw"])
-            else:
-                st.success("✅ 萃取成功！")
-                data_list = result["data"]
-                if not isinstance(data_list, list):
-                    data_list = [data_list]
+                # 若該檔案尚未被處理，則執行 AI 萃取
+                if current_file_key not in st.session_state.tab2_extractor_results:
+                    if 'temp_dir' not in st.session_state:
+                        st.session_state.temp_dir = tempfile.mkdtemp()
                     
-                if len(data_list) == 0:
-                    st.warning("AI 沒有在這份文件中找到相符的資料。")
-                else:
-                    formatted_text = ""
-                    for i, record in enumerate(data_list):
-                        formatted_text += f"【紀錄 {i+1}】\n"
-                        keys_order = [
-                            "地號", "建號", "門牌", "面積", "持分", "現值", "所有權人", "統一編號", "出生年月日",
-                            "主要用途", "主要建材", "建築完成日期", "層次與面積", 
-                            "主建物總面積", "附屬建物用途與面積", "前次移轉現值", "歷次取得範圍", "地址"
-                        ]
-                        
-                        for key in keys_order:
-                            if key in record and record[key]:
-                                formatted_text += f"{key}：{record[key]}\n"
+                    # 重新命名為安全檔名，防止中文路徑/編碼問題
+                    file_ext = uploaded_file2.name.split(".")[-1].lower()
+                    safe_filename = f"extract_temp_{int(time.time())}_{hash(uploaded_file2.name) % 100000}.{file_ext}"
+                    file_path = os.path.join(st.session_state.temp_dir, safe_filename)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file2.getbuffer())
+                    
+                    st.info(f"🤖 AI 正在閱讀並萃取檔案：`{uploaded_file2.name}`，請稍候...")
+                    
+                    extractor = GeminiExtractor(
+                        api_key=st.session_state.api_key,
+                        model_name=current_model
+                    )
+                    
+                    with st.spinner(f"正在解析 {uploaded_file2.name}..."):
+                        if file_ext == "pdf":
+                            result = extractor.process_pdf(file_path)
+                        else:
+                            result = extractor.process_image(file_path)
+                    
+                    # 處理結果
+                    if "error" in result:
+                        st.error(f"❌ 檔案 `{uploaded_file2.name}` 辨識失敗：{result['error']}")
+                        st.session_state.tab2_extractor_results[current_file_key] = {
+                            "filename": uploaded_file2.name,
+                            "error": result["error"]
+                        }
+                    else:
+                        st.success(f"✅ 檔案 `{uploaded_file2.name}` 萃取成功！")
+                        data_list = result["data"]
+                        if not isinstance(data_list, list):
+                            data_list = [data_list]
+                        st.session_state.tab2_extractor_results[current_file_key] = {
+                            "filename": uploaded_file2.name,
+                            "data": data_list
+                        }
+                    # 重新載入以更新畫面
+                    st.rerun()
+                    
+        # 顯示歷史累計萃取結果
+        if st.session_state.tab2_extractor_results:
+            st.markdown("### 📋 歷史萃取結果")
+            
+            combined_formatted_text = ""
+            
+            for file_key, info in list(st.session_state.tab2_extractor_results.items()):
+                filename = info["filename"]
+                
+                # 每個檔案的結果用一個 expander 包起來
+                with st.expander(f"📄 {filename}", expanded=True):
+                    # 單獨刪除此筆的按鈕
+                    col_fname, col_del = st.columns([8, 2])
+                    with col_del:
+                        if st.button("❌ 刪除此筆", key=f"del_{file_key}", use_container_width=True):
+                            del st.session_state.tab2_extractor_results[file_key]
+                            st.rerun()
+                            
+                    if "error" in info:
+                        st.error(f"解析失敗：{info['error']}")
+                    else:
+                        data_list = info["data"]
+                        if len(data_list) == 0:
+                            st.warning("AI 沒有在這份文件中找到相符的資料。")
+                        else:
+                            file_formatted_text = ""
+                            for i, record in enumerate(data_list):
+                                file_formatted_text += f"【紀錄 {i+1}】\\n"
+                                keys_order = [
+                                    "地號", "建號", "門牌", "面積", "持分", "現值", "所有權人", "統一編號", "出生年月日",
+                                    "主要用途", "主要建材", "建築完成日期", "層次與面積", 
+                                    "主建物總面積", "附屬建物用途與面積", "前次移轉現值", "歷次取得範圍", "地址"
+                                ]
                                 
-                        for key, value in record.items():
-                            if key not in keys_order and value:
-                                formatted_text += f"{key}：{value}\n"
+                                for key in keys_order:
+                                    if key in record and record[key]:
+                                        file_formatted_text += f"{key}：{record[key]}\\n"
+                                        
+                                for key, value in record.items():
+                                    if key not in keys_order and value:
+                                        file_formatted_text += f"{key}：{value}\\n"
+                                        
+                                file_formatted_text += "\\n"
                                 
-                        formatted_text += "\n"
-                        
-                    st.markdown("### 📋 萃取結果 (可直接複製)")
-                    st.code(formatted_text.strip(), language="text")
+                            st.code(file_formatted_text.strip(), language="text")
+                            combined_formatted_text += f"=== 檔案：{filename} ===\\n{file_formatted_text}\\n"
+                            
+            # 若有兩個以上的檔案結果，額外顯示合併複製區
+            if len(st.session_state.tab2_extractor_results) > 1 and combined_formatted_text:
+                st.markdown("### 📚 所有檔案合併結果 (可一次複製全部)")
+                st.code(combined_formatted_text.strip(), language="text")
+
 
 with tab3:
     st.header("🔍 智能案卷預審 (AI Pre-Review)")
