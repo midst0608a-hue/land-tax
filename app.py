@@ -564,7 +564,7 @@ with tab2:
             "請上傳圖檔或 PDF (可上傳多個檔案陸續辨識)", 
             type=["pdf", "jpg", "jpeg", "png"], 
             accept_multiple_files=True, 
-            key="extractor_up"
+            key="extractor_up_multi"
         )
         
         # 控制按鈕與提示欄
