@@ -653,7 +653,7 @@ with tab2:
                         else:
                             file_formatted_text = ""
                             for i, record in enumerate(data_list):
-                                file_formatted_text += f"【紀錄 {i+1}】\\n"
+                                file_formatted_text += f"【紀錄 {i+1}】\n"
                                 keys_order = [
                                     "地號", "建號", "門牌", "面積", "持分", "現值", "所有權人", "統一編號", "出生年月日",
                                     "主要用途", "主要建材", "建築完成日期", "層次與面積", 
@@ -662,16 +662,16 @@ with tab2:
                                 
                                 for key in keys_order:
                                     if key in record and record[key]:
-                                        file_formatted_text += f"{key}：{record[key]}\\n"
+                                        file_formatted_text += f"{key}：{record[key]}\n"
                                         
                                 for key, value in record.items():
                                     if key not in keys_order and value:
-                                        file_formatted_text += f"{key}：{value}\\n"
+                                        file_formatted_text += f"{key}：{value}\n"
                                         
-                                file_formatted_text += "\\n"
+                                file_formatted_text += "\n"
                                 
                             st.code(file_formatted_text.strip(), language="text")
-                            combined_formatted_text += f"=== 檔案：{filename} ===\\n{file_formatted_text}\\n"
+                            combined_formatted_text += f"=== 檔案：{filename} ===\n{file_formatted_text}\n"
                             
             # 若有兩個以上的檔案結果，額外顯示合併複製區
             if len(st.session_state.tab2_extractor_results) > 1 and combined_formatted_text:
