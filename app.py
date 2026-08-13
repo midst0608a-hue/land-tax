@@ -1,4 +1,5 @@
 import streamlit as st
+import time
 import sys
 import os
 import datetime
@@ -652,7 +653,7 @@ with tab2:
                         else:
                             file_formatted_text = ""
                             for i, record in enumerate(data_list):
-                                file_formatted_text += f"【紀錄 {i+1}】\\n"
+                                file_formatted_text += f"【紀錄 {i+1}】\n"
                                 keys_order = [
                                     "地號", "建號", "門牌", "面積", "持分", "現值", "所有權人", "統一編號", "出生年月日",
                                     "主要用途", "主要建材", "建築完成日期", "層次與面積", 
@@ -661,16 +662,16 @@ with tab2:
                                 
                                 for key in keys_order:
                                     if key in record and record[key]:
-                                        file_formatted_text += f"{key}：{record[key]}\\n"
+                                        file_formatted_text += f"{key}：{record[key]}\n"
                                         
                                 for key, value in record.items():
                                     if key not in keys_order and value:
-                                        file_formatted_text += f"{key}：{value}\\n"
+                                        file_formatted_text += f"{key}：{value}\n"
                                         
-                                file_formatted_text += "\\n"
+                                file_formatted_text += "\n"
                                 
                             st.code(file_formatted_text.strip(), language="text")
-                            combined_formatted_text += f"=== 檔案：{filename} ===\\n{file_formatted_text}\\n"
+                            combined_formatted_text += f"=== 檔案：{filename} ===\n{file_formatted_text}\n"
                             
             # 若有兩個以上的檔案結果，額外顯示合併複製區
             if len(st.session_state.tab2_extractor_results) > 1 and combined_formatted_text:
@@ -680,7 +681,7 @@ with tab2:
 
 with tab3:
     st.header("🔍 智能案卷預審 (AI Pre-Review)")
-    st.markdown("上傳要審核的公契、土地登記申請書等公文影像，輸入案件背景描述，AI 將自動與地政審查規範進行對照，分析填寫疏漏、文件完整度或欄位不一致的潛在風險。")
+    st.markdown("上傳要審核的公契、土地登記申請書等公文影像，輸入案件背景描述，系統將透過 **結構化切片**、**混合檢索 (Hybrid Search)** 與 **Agentic Workflow 分步推理**，自動與《土地登記審查手冊》進行規範對照，為地政士與審查員建立最專業溫和的送件防護網。")
     
     if not st.session_state.api_key:
         st.warning("⚠️ 請先在左側欄輸入您的 Google Gemini API Key 才能開啟此功能！")
@@ -689,16 +690,31 @@ with tab3:
         case_desc_input = st.text_area(
             "📝 請輸入案件口語描述 (背景資訊)",
             placeholder="例如：本案為夫妻贈與所有權移轉登記，先生（義務人）將大安區土地贈與給太太（權利人），由地政士代理送件。先生有欠繳地價稅已補繳，檢附補繳收據。",
-            height=150
+            height=130
         )
         
+        # 新增審查重點關注項目選單
+        review_focus_options = st.multiselect(
+            "🎯 (選填) 請選擇欲加強覆核的重點項目",
+            options=[
+                "印鑑證明有效期限（核發日起算3個月內）",
+                "土地增值稅/契稅/房屋稅完稅證明",
+                "遺產稅繳清/贈與稅不計入贈與總額證明",
+                "權利範圍與持分算式對齊",
+                "代理人授權委託與蓋章欄位",
+                "塗銷登記/預告登記限制清查",
+                "公契印花稅票貼足證明"
+            ],
+            default=["印鑑證明有效期限（核發日起算3個月內）", "土地增值稅/契稅/房屋稅完稅證明", "權利範圍與持分算式對齊"]
+        )
+
         # 檢查是否有預設手冊並提示使用者
         default_manual_name = "土地登記審查手冊.pdf"
         default_manual_path = os.path.join(os.path.dirname(__file__), default_manual_name)
         has_default_manual = os.path.exists(default_manual_path)
         
         if has_default_manual:
-            st.info(f"💡 系統偵測到預設手冊「{default_manual_name}」，若不另行上傳自訂手冊，將自動以此進行比對與預審。")
+            st.info(f"💡 系統已自動載入知識庫預設規範與《{default_manual_name}》，進行混合檢索 (Hybrid Search) 對照。")
         else:
             st.warning(f"⚠️ 尚未偵測到預設審查手冊。您可以將「{default_manual_name}」放置於專案目錄下以供自動載入，或在下方直接上傳手冊。")
 
@@ -708,7 +724,7 @@ with tab3:
         with col_rev2:
             uploaded_manual = st.file_uploader("📘 (選填) 上傳自訂審查手冊或指引 PDF", type=["pdf"], key="reviewer_manual")
             
-        if st.button("🚀 開始智能預審", type="primary", use_container_width=True):
+        if st.button("🚀 開始 Agentic 智能預審", type="primary", use_container_width=True):
             if not case_desc_input.strip():
                 st.error("請先輸入案件描述！")
             elif uploaded_doc is None:
@@ -737,22 +753,31 @@ with tab3:
                     manual_path = default_manual_path
                     manual_mime = "application/pdf"
                 
-                st.info("🤖 AI 正在比對公契與手冊中，可能需要 10~20 秒，請稍候...")
                 extractor = GeminiExtractor(api_key=st.session_state.api_key)
                 
-                with st.spinner("AI 審查比對中..."):
+                with st.spinner("🤖 Step 1/3: 正在萃取案卷結構化 JSON ... Step 2/3: 進行手冊混合檢索 ... Step 3/3: 產出專業安全防護網..."):
                     review_result = extractor.process_review(
                         doc_path=doc_path,
                         doc_mime=doc_mime,
                         case_desc=case_desc_input,
                         manual_path=manual_path,
-                        manual_mime=manual_mime
+                        manual_mime=manual_mime,
+                        review_focus=review_focus_options
                     )
                     
                 if "error" in review_result:
                     st.error(f"❌ 審查失敗：{review_result['error']}")
                 else:
-                    st.success("✅ 預審查完成！")
+                    st.success("✅ 智能預審完成！已為您生成專業送件防護報告。")
+
+                    # 顯示精準檢索到的手冊條文點次
+                    if "retrieved_rules" in review_result and review_result["retrieved_rules"]:
+                        with st.expander("📘 本案件精準對照之《土地登記審查手冊》規範點次依據", expanded=False):
+                            for r_idx, rule in enumerate(review_result["retrieved_rules"], 1):
+                                st.markdown(f"**【規範點次 {r_idx}】** {rule.get('section_title', '')} - {rule.get('title', '')} (`{rule.get('statute_ref', '')}`)")
+                                st.caption(rule.get('content', ''))
+
+                    st.markdown("---")
                     st.markdown(review_result["report"])
 
 with tab4:

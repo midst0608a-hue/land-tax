@@ -3,6 +3,7 @@ import json
 import time
 from google import genai
 from google.genai import types
+from review_knowledge_base import ReviewKnowledgeBase
 
 class GeminiExtractor:
     def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash"):
@@ -231,8 +232,13 @@ class GeminiExtractor:
         except json.JSONDecodeError:
             return {"error": "無法解析 AI 的回覆格式，請重新嘗試。", "raw": text}
 
-    def process_review(self, doc_path: str, doc_mime: str, case_desc: str, manual_path: str = None, manual_mime: str = None):
-        """上傳要審查的文件以及(選填的)審查手冊，根據案件描述與手冊規範進行比對與審核"""
+    def process_review(self, doc_path: str, doc_mime: str, case_desc: str, manual_path: str = None, manual_mime: str = None, review_focus: list = None):
+        """
+        Agentic Workflow 土地登記案卷預審系統：
+        1. 資訊萃取 (Extraction): 抽出案件結構化 JSON (登記原因, 申請人身分, 標的, 檢附文件)
+        2. 混合檢索 (Hybrid Search Retrieval): 依據 JSON 與標籤對照《土地登記審查手冊》精準點次
+        3. 邏輯比對 (Audit & Empowering Packaging): 套用溫和賦能與 Checklist 檢核表輸出
+        """
         uploaded_doc = None
         uploaded_manual = None
         temp_doc_ascii = None
@@ -254,13 +260,12 @@ class GeminiExtractor:
                 shutil.copy2(doc_path, temp_doc_ascii)
                 upload_doc_path = temp_doc_ascii
 
-            # 1. 上傳要審查的文件 (公契/申請書)
+            # 上傳審查文件
             uploaded_doc = client.files.upload(
                 file=upload_doc_path,
                 config={'mime_type': doc_mime}
             )
 
-            # 等待檔案處理完成
             while True:
                 doc_info = client.files.get(name=uploaded_doc.name)
                 state_str = str(doc_info.state)
@@ -270,74 +275,120 @@ class GeminiExtractor:
                     return {"error": f"審查文件處理失敗 (狀態: {state_str})"}
                 time.sleep(2)
 
-            contents = [doc_info]
+            # Step 1: 結構化資訊萃取 (Extraction)
+            extraction_prompt = f"""
+            你是一個專業的台灣地政登記案件資料萃取器。
+            請閱讀所提供之審查文件（公契/土地登記申請書/附件圖檔）與使用者輸入之案件描述：
+            【案件口語描述】：
+            {case_desc}
 
-            # 2. 上傳自訂審查手冊 (選填)
-            if manual_path and manual_mime:
-                # Ensure manual_path is ASCII-safe
-                manual_filename = os.path.basename(manual_path)
-                try:
-                    manual_filename.encode('ascii')
-                    upload_manual_path = manual_path
-                except UnicodeEncodeError:
-                    ext = os.path.splitext(manual_path)[1]
-                    temp_dir = os.path.dirname(manual_path) or tempfile.gettempdir()
-                    temp_manual_ascii = os.path.join(temp_dir, f"temp_manual_ascii_{int(time.time())}{ext}")
-                    shutil.copy2(manual_path, temp_manual_ascii)
-                    upload_manual_path = temp_manual_ascii
-
-                uploaded_manual = client.files.upload(
-                    file=upload_manual_path,
-                    config={'mime_type': manual_mime}
-                )
-
-                # 等待審查手冊處理完成
-                while True:
-                    manual_info = client.files.get(name=uploaded_manual.name)
-                    state_str = str(manual_info.state)
-                    if "ACTIVE" in state_str:
-                        break
-                    elif "FAILED" in state_str:
-                        return {"error": f"自訂審查手冊處理失敗 (狀態: {state_str})"}
-                    time.sleep(2)
-
-                contents.append(manual_info)
-
-            # 建立預審 Prompt
-            review_prompt = f"""
-            你是一個專業的台灣地政登記案件審查助理。
-            請比對使用者提供的審查文件與案件背景描述，並參考地政登記審查手冊（若有提供），進行詳細比對與預審。
+            請輸出一段嚴格符合 JSON 格式的數據，包含：
+            - "registration_type": "買賣" / "贈與" / "夫妻贈與" / "繼承" / "抵押權設定" / "所有權移轉" / "其他"
+            - "obligor_name": "義務人/出賣人/贈與人姓名"
+            - "obligor_id": "義務人身分證號/統編"
+            - "right_holder_name": "權利人/買受人/受贈人姓名"
+            - "right_holder_id": "權利人身分證號/統編"
+            - "property_identifiers": ["土地或建物地號/建號/段名"]
+            - "holding_ratio": "移轉持分或權利範圍"
+            - "contract_date": "公契或原約定日期"
+            - "attached_docs": ["已提示之檢附文件，如印鑑證明、稅單、戶籍謄本等"]
+            - "key_terms": ["專有名詞標籤，如印鑑證明, 土地增值稅, 契稅免稅, 預告登記"]
+            """
             
+            extract_response = self._call_gemini_with_retry(
+                client=client,
+                model=self.model_name,
+                contents=[doc_info, extraction_prompt]
+            )
+
+            extracted_data = {}
+            try:
+                clean_json = extract_response.strip().replace("```json", "").replace("```", "").strip()
+                extracted_data = json.loads(clean_json)
+            except Exception:
+                extracted_data = {
+                    "registration_type": "所有權移轉",
+                    "key_terms": ["印鑑證明", "土地增值稅", "契稅"],
+                    "raw_extraction": extract_response
+                }
+
+            # Step 2: 結構化混合檢索 (Hybrid Search Retrieval)
+            kb = ReviewKnowledgeBase(manual_pdf_path=manual_path if (manual_path and os.path.exists(manual_path)) else None)
+            reg_type = extracted_data.get("registration_type", "所有權移轉")
+            keywords = extracted_data.get("key_terms", ["印鑑證明", "土地增值稅"])
+            if review_focus:
+                keywords.extend(review_focus)
+
+            matched_chunks = kb.search_hybrid(
+                registration_type=reg_type,
+                keywords=keywords,
+                case_desc=case_desc,
+                top_k=4
+            )
+
+            retrieved_rules_str = ""
+            for idx, chunk in enumerate(matched_chunks, 1):
+                retrieved_rules_str += f"""
+                【規範點次 {idx}】：{chunk.get('section_title', '')} - {chunk.get('title', '')} ({chunk.get('statute_ref', '')})
+                【內容依據】：{chunk.get('content', '')}
+                【核心審查對照點】：{', '.join(chunk.get('check_points', []))}
+                """
+
+            # Step 3: 邏輯比對與溫和賦能包裝輸出 (Audit & Tone Packaging)
+            focus_str = f"【使用者指定的重點加強項目】：{', '.join(review_focus)}" if review_focus else ""
+
+            final_audit_prompt = f"""
+            你是一個貼心、極具專業高度且溫和的「地政士與登記案件專業審查助手」。
+            你的目標是為地政士/辦理人員提供「送件前安全防護網 (Checklist)」，協助提升送件一次補正率與順暢度。
+
+            【極重要語氣與表達規範 (Value Packaging)】：
+            - 請絕對避免使用尖銳、批判性或帶有批判懲罰意味的字眼（嚴禁使用：「錯誤」、「無效」、「退件」、「違法」、「不合規定」）。
+            - 請將所有發現的差異與缺漏，包裝為「💡 為確保送件順利，建議您覆核以下項目」或「建議加強核對事項」。
+            - 請以賦能（Empowerment）與專業協作的語氣呈現，強調這是一份能節省時間、避免多次跑地政事務所的「安全備忘錄」。
+            - 每一項提醒，請务必附上我們為您檢索出的《土地登記審查手冊》具體點次或法規條文依據作為權威後盾。
+
+            【案件萃取資訊】：
+            {json.dumps(extracted_data, ensure_ascii=False, indent=2)}
+
             【案件背景描述】：
             {case_desc}
-            
-            【工作任務】：
-            1. 分析審查文件中的填寫內容（例如：姓名、身分證字號、地址、土地/建物標示等），是否與案件背景描述一致。
-            2. 根據審查手冊之規範，檢查此案件填寫是否有缺漏、錯誤，或是不符規定的地方。
-            3. 分析本案件完整度，列出可能需要補件的檔案或證件（如印鑑證明、稅單、贈與稅繳清/免稅證明書等）。
-            4. 指出潛在的登記駁回風險。
-            
-            請將審查結果彙整為一份結構清晰、格式美觀的 Markdown 報告回傳。
-            報告應包含以下區塊：
-            - **📋 案件基本資訊比對**
-            - **🔍 欄位填寫與一致性審查**
-            - **📘 審查手冊對照與法規相符性**
-            - **⚠️ 潛在風險與補正建議**
+
+            {focus_str}
+
+            【從《土地登記審查手冊》精準檢索到的審查規範依據】：
+            {retrieved_rules_str}
+
+            請輸出結構清晰、排版美觀的 Markdown 預審報告，必須包含以下區塊：
+
+            ### 💡 1. 案件送件安全防護網 (Checklist 覆核表)
+            (使用表格或勾選框 [ ] 呈現，分為：✅ 填寫相符項目、💡 建議送件前再覆核/確認項目)
+
+            ### 📋 2. 案件基本資料與欄位比對清單
+            (呈現當事人姓名/身分證字號、土地標示與權利範圍之核對結果)
+
+            ### 📘 3. 審查手冊點次與法規依據 (Citations & Rules)
+            (列出本案件適用之《土地登記審查手冊》點次、土地登記規則第34/41/56條等條文依據)
+
+            ### 🤝 4. 專業送件小叮嚀與檢附文件建議
+            (提醒應齊備之附件，如印鑑證明3個月效期、完稅證明章、委託書簽章等)
             """
-            contents.append(review_prompt)
 
             response_text = self._call_gemini_with_retry(
                 client=client,
-                model='gemini-2.5-flash',
-                contents=contents
+                model=self.model_name,
+                contents=[doc_info, final_audit_prompt]
             )
 
-            return {"success": True, "report": response_text}
+            return {
+                "success": True,
+                "report": response_text,
+                "extracted_data": extracted_data,
+                "retrieved_rules": matched_chunks
+            }
 
         except Exception as e:
             return {"error": f"審查過程發生錯誤：{str(e)}"}
         finally:
-            # 清理：無論成功或失敗，都盡可能刪除雲端上的暫存檔案
             if uploaded_doc:
                 try:
                     client.files.delete(name=uploaded_doc.name)
@@ -348,7 +399,6 @@ class GeminiExtractor:
                     client.files.delete(name=uploaded_manual.name)
                 except Exception:
                     pass
-            # 清理 ASCII 暫存檔案
             if temp_doc_ascii and os.path.exists(temp_doc_ascii):
                 try:
                     os.remove(temp_doc_ascii)
