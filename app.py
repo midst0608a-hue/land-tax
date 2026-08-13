@@ -780,6 +780,66 @@ with tab3:
                     st.markdown("---")
                     st.markdown(review_result["report"])
 
+        st.markdown("---")
+        # 新增「隨手拍 ➔ AI 研討 ➔ 自動歸檔錯題庫」互動元件
+        with st.expander("🛡️ 隨手拍/經驗備忘 ➔ AI 研討與自動歸檔防護庫 (Snap & Learn)", expanded=False):
+            st.markdown("當您拿到地政事務所開出的**補正通知單公文**，或者手邊有瑣碎的**實務內規備忘**，請隨手拍照上傳或打字輸入。AI 會自動閱讀解讀，與您研討確認後歸檔至團隊防護庫，讓系統越用越聰明！")
+            
+            fb_col1, fb_col2 = st.columns(2)
+            with fb_col1:
+                uploaded_fb_img = st.file_uploader("📸 上傳補正單照片 / 公文 PDF", type=["jpg", "jpeg", "png", "pdf"], key="fb_img_uploader")
+                fb_office = st.text_input("🏛️ 地政機關名稱", value="台北市大安地政事務所", key="fb_office_input")
+            with fb_col2:
+                fb_user_note = st.text_area("📝 (選填) 您的口語筆記或補正說明備忘", placeholder="例如：大安地政櫃台告知，未成年人買賣除法定代理人蓋章外，遺產協議書騎縫章與切結書要特別蓋印鑑章...", height=110, key="fb_note_input")
+
+            if st.button("🤖 啟動 AI 影像解讀與經驗研討", type="secondary", use_container_width=True):
+                if uploaded_fb_img is None and not fb_user_note.strip():
+                    st.warning("請至少上傳一張照片或輸入一段文字備忘！")
+                else:
+                    if 'temp_dir' not in st.session_state:
+                        st.session_state.temp_dir = tempfile.mkdtemp()
+                    
+                    fb_doc_path = None
+                    fb_doc_mime = None
+                    if uploaded_fb_img:
+                        fb_doc_path = os.path.join(st.session_state.temp_dir, "fb_" + uploaded_fb_img.name)
+                        with open(fb_doc_path, "wb") as f:
+                            f.write(uploaded_fb_img.getbuffer())
+                        fb_ext = uploaded_fb_img.name.split(".")[-1].lower()
+                        fb_doc_mime = "application/pdf" if fb_ext == "pdf" else f"image/{fb_ext}"
+
+                    extractor = GeminiExtractor(api_key=st.session_state.api_key)
+                    with st.spinner("AI 正在閱讀補正照片並進行經驗歸納..."):
+                        fb_res = extractor.process_feedback_analysis(
+                            doc_path=fb_doc_path,
+                            doc_mime=fb_doc_mime,
+                            user_note=fb_user_note,
+                            office_name=fb_office
+                        )
+                    
+                    if "error" in fb_res:
+                        st.error(f"❌ 解析失敗：{fb_res['error']}")
+                    else:
+                        st.session_state.fb_draft = fb_res["analysis"]
+                        st.success("✅ AI 已完成閱讀與研討摘要！請確認下方歸檔卡片：")
+
+            if "fb_draft" in st.session_state:
+                draft = st.session_state.fb_draft
+                st.info(f"💬 **AI 研討回覆**：\n{draft.get('summary_dialogue', '')}")
+                st.subheader("📋 歸檔草稿與條目標籤")
+                draft["title"] = st.text_input("標題名稱", value=draft.get("title", ""), key="draft_title")
+                draft["registration_type"] = st.selectbox("適用登記原因", options=["買賣", "贈與", "夫妻贈與", "繼承", "抵押權設定", "通用"], index=0, key="draft_reg")
+                draft["content"] = st.text_area("實務防護要點與補正規範", value=draft.get("content", ""), height=100, key="draft_content")
+                
+                if st.button("📥 正式歸檔入團隊實務防護庫", type="primary", use_container_width=True):
+                    kb = ReviewKnowledgeBase()
+                    ok = kb.save_feedback_entry(draft)
+                    if ok:
+                        st.success("🎉 成功歸檔！此筆經驗已永久納入防護記憶體，下次進行案卷預審時將自動為您提示！")
+                        del st.session_state["fb_draft"]
+                    else:
+                        st.error("寫入歸檔檔失敗，請再試一次。")
+
 with tab4:
     st.header("✍️ 土地所有權移轉契約書智能生成")
     st.markdown("上傳您的土地登記謄本、出賣人（義務人）與買受人（權利人）的身分證件。AI 將自動辨識雙方姓名、身分證字號、住所與土地標示，套入符合地政官方格式的契約書，並提供下載 Word（HTML相容）格式的契約檔案。")

@@ -410,6 +410,101 @@ class GeminiExtractor:
                 except Exception:
                     pass
 
+    def process_feedback_analysis(self, doc_path: str = None, doc_mime: str = None, user_note: str = "", office_name: str = "地政事務所"):
+        """
+        多模態補正單照片 / 口語備忘 AI 分析與歸檔助理
+        """
+        uploaded_file = None
+        temp_ascii = None
+        try:
+            client = genai.Client(api_key=self.api_key)
+            import shutil
+            import tempfile
+
+            contents = []
+            if doc_path and os.path.exists(doc_path):
+                filename = os.path.basename(doc_path)
+                try:
+                    filename.encode('ascii')
+                    upload_path = doc_path
+                except UnicodeEncodeError:
+                    ext = os.path.splitext(doc_path)[1]
+                    temp_ascii = os.path.join(tempfile.gettempdir(), f"fb_temp_ascii_{int(time.time())}{ext}")
+                    shutil.copy2(doc_path, temp_ascii)
+                    upload_path = temp_ascii
+
+                uploaded_file = client.files.upload(
+                    file=upload_path,
+                    config={'mime_type': doc_mime or 'image/jpeg'}
+                )
+
+                while True:
+                    file_info = client.files.get(name=uploaded_file.name)
+                    state_str = str(file_info.state)
+                    if "ACTIVE" in state_str:
+                        break
+                    elif "FAILED" in state_str:
+                        return {"error": f"照片處理失敗 (狀態: {state_str})"}
+                    time.sleep(2)
+
+                contents.append(file_info)
+
+            prompt = f"""
+            你是一個專業的台灣地政經驗知識庫歸檔助理。
+            使用者上傳了一張地政事務所開立的補正通知單照片/文件，或者口述了一段實務補正經驗：
+            【使用者口述/對話備忘】：
+            {user_note}
+
+            【機關名稱】：{office_name}
+
+            【工作任務】：
+            1. 分析照片與文字中的補正事由、涉及欄位、法規與改善作法。
+            2. 以對話式、極具專業賦能感的語氣摘要這項實務眉角。
+            3. 輸出 JSON 格式供知識庫歸檔：
+            - "title": "簡短的眉角標題（例如：分割繼承協議書騎縫章與印花稅）"
+            - "registration_type": "買賣" / "贈與" / "繼承" / "抵押權設定" / "通用"
+            - "office_name": "{office_name}"
+            - "content": "詳細補正事由與建議作法說明"
+            - "summary_dialogue": "給使用者的互動回覆與確認語句"
+            """
+            contents.append(prompt)
+
+            response_text = self._call_gemini_with_retry(
+                client=client,
+                model=self.model_name,
+                contents=contents
+            )
+
+            clean_json = response_text.strip().replace("```json", "").replace("```", "").strip()
+            try:
+                data = json.loads(clean_json)
+                return {"success": True, "analysis": data, "raw": response_text}
+            except Exception:
+                return {
+                    "success": True,
+                    "analysis": {
+                        "title": "地政實務補正經驗備忘",
+                        "registration_type": "通用",
+                        "office_name": office_name,
+                        "content": user_note or response_text[:200],
+                        "summary_dialogue": response_text
+                    },
+                    "raw": response_text
+                }
+        except Exception as e:
+            return {"error": f"補正單分析失敗：{str(e)}"}
+        finally:
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception:
+                    pass
+            if temp_ascii and os.path.exists(temp_ascii):
+                try:
+                    os.remove(temp_ascii)
+                except Exception:
+                    pass
+
     def process_contract_extraction(self,
                                  land_doc_path: str = None, land_doc_mime: str = None,
                                  building_doc_paths: list = None, building_doc_mimes: list = None,

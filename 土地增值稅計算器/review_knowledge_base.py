@@ -85,8 +85,31 @@ class ReviewKnowledgeBase:
     def __init__(self, manual_pdf_path: str = None):
         self.manual_pdf_path = manual_pdf_path
         self.dynamic_chunks = []
+        self.feedback_memory_path = os.path.join(os.path.dirname(__file__), "feedback_memory.json")
         if manual_pdf_path and os.path.exists(manual_pdf_path):
             self._load_and_chunk_pdf(manual_pdf_path)
+
+    def load_feedback_memory(self) -> List[Dict[str, Any]]:
+        """讀取地政事務所實務補正錯題庫經驗檔 (feedback_memory.json)"""
+        if os.path.exists(self.feedback_memory_path):
+            try:
+                with open(self.feedback_memory_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return []
+        return []
+
+    def save_feedback_entry(self, entry: Dict[str, Any]) -> bool:
+        """寫入一筆新的實務補正經驗至 feedback_memory.json"""
+        try:
+            records = self.load_feedback_memory()
+            entry["id"] = f"FB_{len(records)+1}_{int(time.time())}"
+            records.append(entry)
+            with open(self.feedback_memory_path, "w", encoding="utf-8") as f:
+                json.dump(records, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
 
     def _load_and_chunk_pdf(self, pdf_path: str):
         """依據《土地登記審查手冊》的章節與點次進行結構化切片 (Structural Chunking)"""
@@ -179,8 +202,23 @@ class ReviewKnowledgeBase:
         - Metadata 過濾: matching registration_type
         - BM25 / 精確關鍵字評分 (70% 權重)
         - 語意關聯/概念評分 (30% 權重)
+        - 包含實務累積之經驗錯題庫 (feedback_memory.json)
         """
-        all_pool = list(self.CORE_RULES_DATABASE) + self.dynamic_chunks
+        fb_records = self.load_feedback_memory()
+        converted_fb = []
+        for fb in fb_records:
+            converted_fb.append({
+                "id": fb.get("id", "FB"),
+                "section_title": f"🛡️ 實務地政防護庫 ({fb.get('office_name', '實務經驗')})",
+                "rule_index": "團隊防護案例",
+                "registration_type": [fb.get("registration_type", "通用")],
+                "title": f"實務補正提醒：{fb.get('title', '補正眉角')}",
+                "content": fb.get("content", ""),
+                "check_points": [fb.get("content", "")],
+                "statute_ref": f"地政事務所實務經驗 ({fb.get('office_name', '實務案例')})"
+            })
+
+        all_pool = list(self.CORE_RULES_DATABASE) + converted_fb + self.dynamic_chunks
         scored_results = []
 
         query_terms = set(keywords)
@@ -199,6 +237,10 @@ class ReviewKnowledgeBase:
                 score += 4.0
             else:
                 score -= 1.5
+
+            # 實務防護經驗加分 (權重 +2.0)
+            if "FB_" in str(rule.get("id", "")):
+                score += 2.5
 
             # 2. 關鍵字精確比對 BM25/Sparse 評分 (70% 語意權重)
             rule_text = f"{rule.get('section_title', '')} {rule.get('title', '')} {rule.get('content', '')} {' '.join(rule.get('check_points', []))}"
