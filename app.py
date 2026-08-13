@@ -297,15 +297,38 @@ st.set_page_config(page_title="台灣不動產全能工作站", page_icon="🏦"
 st.title("🏦 台灣不動產全能工作站")
 
 # 設定 API Key
-if "api_key" not in st.session_state:
-    st.session_state.api_key = ""
+# 設定 API Key 與手機一鍵自動載入
+if "api_key" not in st.session_state or not st.session_state.api_key:
+    env_key = os.environ.get("GEMINI_API_KEY", "")
+    secrets_key = ""
+    try:
+        if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+            secrets_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+    
+    # 支援 URL 網址參數傳遞 ?key=xxx
+    query_key = ""
+    try:
+        if hasattr(st, "query_params") and "key" in st.query_params:
+            query_key = st.query_params["key"]
+    except Exception:
+        pass
+        
+    st.session_state.api_key = secrets_key or env_key or query_key or ""
 
 with st.sidebar:
     st.header("⚙️ 全域設定")
-    api_key_input = st.text_input("請輸入 Google Gemini API Key", type="password", value=st.session_state.api_key)
+    
+    if st.session_state.api_key:
+        st.success("✅ 已成功載入 Gemini API Key")
+    else:
+        st.info("💡 手機使用提示：可於 Streamlit Cloud 設定 Secrets，或將 API Key 貼在下方欄位。")
+
+    api_key_input = st.text_input("🔑 Google Gemini API Key", type="password", value=st.session_state.api_key)
     if api_key_input:
-        st.session_state.api_key = api_key_input
-        
+        st.session_state.api_key = api_key_input.strip()
+
     st.markdown("---")
     model_options = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"]
     st.session_state.selected_model = st.selectbox(
