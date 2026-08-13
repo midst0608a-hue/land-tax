@@ -5,3 +5,5 @@ openpyxl
 xlrd
 google-genai
 Pillow
+st-gsheets-connection
+gspread

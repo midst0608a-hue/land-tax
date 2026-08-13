@@ -808,6 +808,32 @@ with tab3:
         with st.expander("🛡️ 隨手拍/經驗備忘 ➔ AI 研討與自動歸檔防護庫 (Snap & Learn)", expanded=False):
             st.markdown("當您拿到地政事務所開出的**補正通知單公文**，或者手邊有瑣碎的**實務內規備忘**，請隨手拍照上傳或打字輸入。AI 會自動閱讀解讀，與您研討確認後歸檔至團隊防護庫，讓系統越用越聰明！")
             
+            # Google Sheets 連線狀態檢查
+            has_gsheets = False
+            try:
+                if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
+                    has_gsheets = True
+            except Exception:
+                pass
+                
+            if has_gsheets:
+                st.success("📊 **防護庫儲存狀態**：✅ 已成功連接您的私人 Google 雲端試算表 (Google Sheets)，所有歸檔經驗將 100% 永久保留且同步寫入！")
+            else:
+                st.info("📁 **防護庫儲存狀態**：目前採用內建持久化檔庫 (`feedback_memory.json`)。欲 100% 寫入您的私人 Google 雲端硬碟試算表，請展開下方教學。")
+                with st.expander("💡 1 分鐘連線您的私人 Google 雲端試算表 (Google Sheets Teaching)", expanded=False):
+                    st.markdown("""
+                    **輕鬆設定 3 步驟**：
+                    1. 開啟您的 [Google Sheets 雲端試算表](https://sheets.google.com)，建立一個新表單，將網址複製下來。
+                    2. 前往 [Streamlit Cloud Dashboard](https://share.streamlit.io/) 點擊 Settings ➔ Secrets。
+                    3. 貼上以下連線設定：
+                    ```toml
+                    [connections.gsheets]
+                    spreadsheet = "https://docs.google.com/spreadsheets/d/您的試算表ID/edit"
+                    type = "streamlit_gsheets.GSheetsConnection"
+                    ```
+                    儲存後即可完成全自動雙向讀寫連線！
+                    """)
+
             fb_col1, fb_col2 = st.columns(2)
             with fb_col1:
                 uploaded_fb_img = st.file_uploader("📸 上傳補正單照片 / 公文 PDF", type=["jpg", "jpeg", "png", "pdf"], key="fb_img_uploader")

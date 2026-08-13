@@ -90,7 +90,21 @@ class ReviewKnowledgeBase:
             self._load_and_chunk_pdf(manual_pdf_path)
 
     def load_feedback_memory(self) -> List[Dict[str, Any]]:
-        """讀取地政事務所實務補正錯題庫經驗檔 (feedback_memory.json)"""
+        """讀取地政事務所實務補正錯題庫經驗檔 (支援 Google Sheets 與 JSON 雙軌)"""
+        # 1. 優先嘗試從 Google Sheets (st.connection 或 st.secrets["gsheets"]) 讀取
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
+                from streamlit_gsheets import GSheetsConnection
+                conn = st.connection("gsheets", type=GSheetsConnection)
+                df = conn.read(ttl="10s")
+                if df is not None and not df.empty:
+                    records = df.to_dict(orient="records")
+                    return records
+        except Exception:
+            pass
+
+        # 2. 備用方案：從本地與 repo 內建之 feedback_memory.json 讀取
         if os.path.exists(self.feedback_memory_path):
             try:
                 with open(self.feedback_memory_path, "r", encoding="utf-8") as f:
@@ -100,16 +114,38 @@ class ReviewKnowledgeBase:
         return []
 
     def save_feedback_entry(self, entry: Dict[str, Any]) -> bool:
-        """寫入一筆新的實務補正經驗至 feedback_memory.json"""
+        """寫入一筆新的實務補正經驗至 Google Sheets 試算表與 feedback_memory.json"""
+        local_ok = False
+        # 1. 寫入本地 JSON 備份
         try:
             records = self.load_feedback_memory()
             entry["id"] = f"FB_{len(records)+1}_{int(time.time())}"
             records.append(entry)
             with open(self.feedback_memory_path, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
-            return True
+            local_ok = True
         except Exception:
-            return False
+            pass
+
+        # 2. 嘗試同步寫入 Google Sheets 雲端試算表
+        try:
+            import streamlit as st
+            if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
+                import pandas as pd
+                from streamlit_gsheets import GSheetsConnection
+                conn = st.connection("gsheets", type=GSheetsConnection)
+                existing_df = conn.read(ttl="0s")
+                new_row = pd.DataFrame([entry])
+                if existing_df is not None and not existing_df.empty:
+                    updated_df = pd.concat([existing_df, new_row], ignore_index=True)
+                else:
+                    updated_df = new_row
+                conn.update(data=updated_df)
+                return True
+        except Exception:
+            pass
+
+        return local_ok
 
     def _load_and_chunk_pdf(self, pdf_path: str):
         """依據《土地登記審查手冊》的章節與點次進行結構化切片 (Structural Chunking)"""
