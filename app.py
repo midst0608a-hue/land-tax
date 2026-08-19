@@ -18,6 +18,7 @@ try:
     import extractor
     importlib.reload(extractor)
     from extractor import GeminiExtractor
+    from review_knowledge_base import ReviewKnowledgeBase
     from contract_generator import generate_contract_html, format_date_to_taiwan, generate_application_html, generate_inventory_html, generate_private_contract_html
     from tax_file_generator import generate_tax_zip, safe_float, safe_int
 
