@@ -835,30 +835,41 @@ with tab3:
         with st.expander("📸 隨手拍 / 公文圖檔 / 實務筆記 ➔ AI 研討與自動歸檔防護庫 (Snap & Learn)", expanded=False):
             st.markdown("當您拿到開出的**補正通知單公文 (PDF/照片)**，或者手邊有瑣碎的**實務備忘**，請隨手拍照上傳或打字輸入。AI 會自動解讀提煉，並將**原始檔案永久留存在資料庫**中，日後辦理類似案件時自動為您提醒與比對！")
             
-            fb_col1, fb_col2 = st.columns(2)
+            fb_col1, fb_col2 = st.columns([1.2, 1])
             with fb_col1:
-                uploaded_fb_img = st.file_uploader("📸 上傳補正單照片 / 公文 PDF", type=["jpg", "jpeg", "png", "webp", "pdf"], key="fb_img_uploader")
+                snap_mode = st.radio("📱 檔案與影像來源", ["📸 開啟手機/電腦相機即拍", "📁 從相簿/電腦選擇圖檔或 PDF"], horizontal=True, key="snap_mode_radio")
+                uploaded_camera = None
+                uploaded_file = None
+                if "相機即拍" in snap_mode:
+                    uploaded_camera = st.camera_input("📸 請對準補正單或公文拍照", key="camera_snap_input")
+                else:
+                    uploaded_file = st.file_uploader("📁 選擇補正單照片 / 公文 PDF", type=["jpg", "jpeg", "png", "webp", "pdf"], key="fb_img_uploader")
+                
+                active_upload = uploaded_camera if uploaded_camera is not None else uploaded_file
+
             with fb_col2:
-                fb_user_note = st.text_area("📝 (選填) 您的口語筆記或補正說明備忘", placeholder="例如：櫃台告知，未成年人買賣除法定代理人蓋章外，遺產協議書騎縫章與切結書要特別蓋印鑑章...", height=110, key="fb_note_input")
+                fb_user_note = st.text_area("📝 (選填) 您的口語筆記或補正說明備忘", placeholder="例如：櫃台告知，未成年人買賣除法定代理人蓋章外，遺產協議書騎縫章與切結書要特別蓋印鑑章...", height=130, key="fb_note_input")
 
             if st.button("🤖 啟動 AI 解讀與經驗研討", type="secondary", use_container_width=True):
-                if uploaded_fb_img is None and not fb_user_note.strip():
-                    st.warning("請至少上傳一張照片/PDF 或輸入一段文字備忘！")
+                if active_upload is None and not fb_user_note.strip():
+                    st.warning("請至少拍攝一張照片、上傳文件或輸入一段文字備忘！")
                 else:
                     if 'temp_dir' not in st.session_state:
                         st.session_state.temp_dir = tempfile.mkdtemp()
                     
                     fb_doc_path = None
                     fb_doc_mime = None
-                    if uploaded_fb_img:
-                        fb_doc_path = os.path.join(st.session_state.temp_dir, "fb_" + uploaded_fb_img.name)
+                    orig_name = None
+                    if active_upload:
+                        orig_name = getattr(active_upload, "name", f"camera_snap_{int(time.time())}.jpg")
+                        fb_doc_path = os.path.join(st.session_state.temp_dir, "fb_" + orig_name)
                         with open(fb_doc_path, "wb") as f:
-                            f.write(uploaded_fb_img.getbuffer())
-                        fb_ext = uploaded_fb_img.name.split(".")[-1].lower()
-                        fb_doc_mime = "application/pdf" if fb_ext == "pdf" else f"image/{fb_ext}"
+                            f.write(active_upload.getbuffer())
+                        fb_ext = orig_name.split(".")[-1].lower()
+                        fb_doc_mime = "application/pdf" if fb_ext == "pdf" else ("image/jpeg" if fb_ext in ["jpg", "jpeg"] else f"image/{fb_ext}")
 
                     extractor = GeminiExtractor(api_key=st.session_state.api_key)
-                    with st.spinner("AI 正在閱讀文件並進行經驗歸納..."):
+                    with st.spinner("AI 正在閱讀影像/文件並進行經驗歸納..."):
                         fb_res = extractor.process_feedback_analysis(
                             doc_path=fb_doc_path,
                             doc_mime=fb_doc_mime,
@@ -870,7 +881,7 @@ with tab3:
                     else:
                         st.session_state.fb_draft = fb_res["analysis"]
                         st.session_state.fb_upload_path = fb_doc_path
-                        st.session_state.fb_orig_name = uploaded_fb_img.name if uploaded_fb_img else None
+                        st.session_state.fb_orig_name = orig_name
                         st.success("✅ AI 已完成閱讀與研討摘要！請確認下方歸檔卡片：")
 
             if "fb_draft" in st.session_state:
