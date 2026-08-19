@@ -4,14 +4,17 @@ import time
 import math
 import json
 import shutil
-from typing import List, Dict, Any
+import subprocess
+import threading
+from typing import List, Dict, Any, Tuple
 
 class ReviewKnowledgeBase:
     """
     土地登記審查手冊與實務防護知識庫模組
     - 結構化切片與混合檢索 (Structural Chunking & Hybrid Search)
     - 支援上傳圖檔 (JPG/PNG/WEBP) 與公文 PDF 永久留存於 knowledge_docs/
-    - 支援歷史案件比對與 AI 自主學習提醒
+    - 支援歸檔時「背景自動同步 GitHub」+「本地定時滾動備份」
+    - 支援跨電腦一鍵 Pull 同步與歷史案件比對
     """
     
     CORE_RULES_DATABASE = [
@@ -91,21 +94,24 @@ class ReviewKnowledgeBase:
         self.manual_pdf_path = manual_pdf_path
         self.dynamic_chunks = []
         base_dir = os.path.dirname(__file__)
+        self.base_dir = base_dir
         self.feedback_memory_path = os.path.join(base_dir, "feedback_memory.json")
         self.docs_storage_dir = os.path.join(base_dir, "knowledge_docs")
+        self.backup_dir = os.path.join(base_dir, "backups")
         
-        # 確保知識庫實體文件存放資料夾存在
-        if not os.path.exists(self.docs_storage_dir):
-            try:
-                os.makedirs(self.docs_storage_dir, exist_ok=True)
-            except Exception:
-                pass
+        # 確保知識庫實體文件與備份存放資料夾存在
+        for p in [self.docs_storage_dir, self.backup_dir]:
+            if not os.path.exists(p):
+                try:
+                    os.makedirs(p, exist_ok=True)
+                except Exception:
+                    pass
 
         if manual_pdf_path and os.path.exists(manual_pdf_path):
             self._load_and_chunk_pdf(manual_pdf_path)
 
     def load_feedback_memory(self) -> List[Dict[str, Any]]:
-        """讀取地政實務防護知識庫資料 (優先直接從本地 feedback_memory.json 極速讀取，永不卡頓)"""
+        """讀取地政實務防護知識庫資料 (優先直接從本地 feedback_memory.json 極速讀取)"""
         if os.path.exists(self.feedback_memory_path):
             try:
                 with open(self.feedback_memory_path, "r", encoding="utf-8") as f:
@@ -116,9 +122,59 @@ class ReviewKnowledgeBase:
                 return []
         return []
 
-    def save_feedback_entry(self, entry: Dict[str, Any], source_file_path: str = None, original_filename: str = None) -> bool:
+    def create_local_backup(self):
+        """建立本地自動歷史備份 (最多保留最新 30 份)"""
+        try:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_file = os.path.join(self.backup_dir, f"feedback_memory_{timestamp}.json")
+            if os.path.exists(self.feedback_memory_path):
+                shutil.copy2(self.feedback_memory_path, backup_file)
+                
+            # 清理過期備份
+            all_backups = sorted([os.path.join(self.backup_dir, f) for f in os.listdir(self.backup_dir) if f.startswith("feedback_memory_")])
+            if len(all_backups) > 30:
+                for old_b in all_backups[:-30]:
+                    try:
+                        os.remove(old_b)
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"本地備份失敗: {e}")
+
+    def sync_to_github_async(self, commit_msg: str = "自動同步實務防護知識庫與公文附件"):
+        """在背景執行緒自動推送到 GitHub，完全不阻塞前端 UI"""
+        def _task():
+            try:
+                status_res = subprocess.run(["git", "status", "--porcelain"], cwd=self.base_dir, capture_output=True, text=True)
+                if status_res.stdout.strip():
+                    subprocess.run(["git", "add", "."], cwd=self.base_dir, check=True)
+                    subprocess.run(["git", "commit", "-m", commit_msg], cwd=self.base_dir, check=True)
+                    subprocess.run(["git", "push", "origin", "master:main"], cwd=self.base_dir, check=True)
+                    print("✅ GitHub 知識庫自動背景同步完成！")
+            except Exception as e:
+                print(f"GitHub 自動同步失敗：{e}")
+
+        thread = threading.Thread(target=_task, daemon=True)
+        thread.start()
+
+    def pull_from_github(self) -> Tuple[bool, str]:
+        """從 GitHub 拉取最新知識庫與附件檔案"""
+        try:
+            res = subprocess.run(["git", "pull", "origin", "master:main"], cwd=self.base_dir, capture_output=True, text=True)
+            if res.returncode == 0:
+                return True, "✅ 成功從 GitHub 同步最新知識庫！"
+            else:
+                return False, f"拉取失敗：{res.stderr or res.stdout}"
+        except Exception as e:
+            return False, f"執行失敗：{str(e)}"
+
+    def save_feedback_entry(self, entry: Dict[str, Any], source_file_path: str = None, original_filename: str = None, auto_sync_github: bool = True) -> bool:
         """
-        寫入一筆新的實務防護經驗至知識庫，並將附件圖檔/PDF 永久保存於 knowledge_docs/ 資料夾
+        寫入一筆新的實務防護經驗至知識庫：
+        1. 將附件圖檔/PDF 永久保存於 knowledge_docs/ 資料夾
+        2. 寫入本地 feedback_memory.json
+        3. 建立本地歷史備份 (backups/)
+        4. 背景自動推送到 GitHub (跨電腦同步)
         """
         local_ok = False
         try:
@@ -151,20 +207,28 @@ class ReviewKnowledgeBase:
             with open(self.feedback_memory_path, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
             local_ok = True
+
+            # 執行本地滾動備份
+            self.create_local_backup()
+
+            # 背景自動推送到 GitHub
+            if auto_sync_github:
+                self.sync_to_github_async(commit_msg=f"自動歸檔經驗 [{entry.get('title', '新案例')}] 並同步附件")
+
         except Exception as e:
             print(f"Error saving feedback entry: {e}")
 
-        # 本地資料庫儲存完成即可快速返回
-
         return local_ok
 
-    def delete_feedback_entry(self, entry_id: str) -> bool:
-        """刪除單筆知識庫條目並清理對應保存的圖檔/PDF"""
+    def delete_feedback_entry(self, entry_id: str, auto_sync_github: bool = True) -> bool:
+        """刪除單筆知識庫條目並清理對應保存的圖檔/PDF，同步更新至 GitHub"""
         try:
             records = self.load_feedback_memory()
             updated_records = []
+            deleted_title = ""
             for r in records:
                 if r.get("id") == entry_id:
+                    deleted_title = r.get("title", entry_id)
                     att = r.get("attached_file")
                     if att and isinstance(att, dict) and att.get("stored_filename"):
                         file_path = os.path.join(self.docs_storage_dir, att["stored_filename"])
@@ -178,6 +242,14 @@ class ReviewKnowledgeBase:
 
             with open(self.feedback_memory_path, "w", encoding="utf-8") as f:
                 json.dump(updated_records, f, ensure_ascii=False, indent=2)
+            
+            # 建立本地備份
+            self.create_local_backup()
+
+            # 背景同步 GitHub
+            if auto_sync_github:
+                self.sync_to_github_async(commit_msg=f"刪除經驗條目 [{deleted_title}] 並同步更新")
+
             return True
         except Exception:
             return False
@@ -297,7 +369,7 @@ class ReviewKnowledgeBase:
         if case_desc:
             words = re.findall(r"[\u4e00-\u9fa5]{2,6}", case_desc)
             for w in words:
-                if any(kw in w for kw in ["印鑑", "代理", "權利範圍", "持分", "增值稅", "契稅", "繼承", "贈與", "土地", "建物", "抵押權", "切結", "戶籍", "協議", "簽名", "蓋章"]):
+                if any(kw in w for kw in ["印鑑", "代理", "權利範圍", "持分", "增值稅", "契稅", "繼承", "贈與", "土地", "建物", "抵押權", "切結", "戶籍", "協議", "簽名", "蓋章", "34-1", "告知"]):
                     query_terms.add(w)
 
         for rule in all_pool:
@@ -318,7 +390,7 @@ class ReviewKnowledgeBase:
             rule_text = f"{rule.get('section_title', '')} {rule.get('title', '')} {rule.get('content', '')} {' '.join(rule.get('check_points', []))}"
             for term in query_terms:
                 if term in rule_text:
-                    if term in ["印鑑證明", "預告登記", "公設保留地", "地上權", "契稅免稅", "土地增值稅", "分割協議", "法定代理人"]:
+                    if term in ["印鑑證明", "預告登記", "公設保留地", "地上權", "契稅免稅", "土地增值稅", "分割協議", "法定代理人", "34-1", "切結書"]:
                         score += 3.0
                     else:
                         score += 1.5

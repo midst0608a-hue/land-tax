@@ -887,7 +887,7 @@ with tab3:
                     orig_name = st.session_state.get("fb_orig_name")
                     ok = kb.save_feedback_entry(draft, source_file_path=saved_path, original_filename=orig_name)
                     if ok:
-                        st.success("🎉 成功歸檔！原始檔案已永久留存於資料庫（knowledge_docs/），下次進行類似案件預審時將自動為您提示與比對！")
+                        st.success("🎉 成功歸檔！檔案已安全留存於本機與備份庫，並在背景自動同步至 GitHub 雲端庫！")
                         if "fb_draft" in st.session_state:
                             del st.session_state["fb_draft"]
                         if "fb_upload_path" in st.session_state:
@@ -903,13 +903,24 @@ with tab3:
             kb = ReviewKnowledgeBase()
             all_records = kb.load_feedback_memory()
             
-            kb_m1, kb_m2, kb_m3 = st.columns([1.5, 2, 2])
+            kb_m1, kb_m2, kb_m3, kb_m4 = st.columns([1.3, 1.8, 1.8, 1.5])
             with kb_m1:
                 st.metric("📦 已收錄實務經驗", f"{len(all_records)} 筆")
             with kb_m2:
                 filter_reg = st.selectbox("📂 依登記原因篩選", options=["全部", "買賣", "贈與", "夫妻贈與", "繼承", "抵押權設定", "通用"], key="kb_filter_reg")
             with kb_m3:
                 search_kw = st.text_input("🔍 搜尋標題/內容關鍵字", placeholder="輸入關鍵字...", key="kb_search_kw")
+            with kb_m4:
+                st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 同步 GitHub 雲端", use_container_width=True, help="從 GitHub 遠端同步最新案例與附件檔案"):
+                    with st.spinner("正在從 GitHub 雲端同步..."):
+                        ok, msg = kb.pull_from_github()
+                        if ok:
+                            st.success(msg)
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error(msg)
 
             filtered_records = []
             for r in all_records:
