@@ -2,9 +2,16 @@ import streamlit as st
 import time
 import sys
 import os
+import json
 import datetime
+from datetime import datetime as dt, timezone, timedelta
 import tempfile
 import importlib
+
+def get_gmt8_now_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """取得台灣時間 (GMT+8) 格式化字串"""
+    tz_gmt8 = timezone(timedelta(hours=8))
+    return dt.now(tz_gmt8).strftime(fmt)
 
 # 確保專案目錄在 sys.path 的最前面，解決 Streamlit Cloud 載入同目錄模組的問題
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1005,7 +1012,7 @@ with tab3:
                     st.download_button(
                         label="⬇️ 匯出下載知識庫備份 (JSON)",
                         data=json_str.encode("utf-8"),
-                        file_name=f"地政實務防護知識庫_{time.strftime('%Y%m%d')}.json",
+                        file_name=f"地政實務防護知識庫_{get_gmt8_now_str('%Y%m%d')}.json",
                         mime="application/json"
                     )
                 

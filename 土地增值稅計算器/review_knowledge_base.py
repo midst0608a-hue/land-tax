@@ -6,7 +6,13 @@ import json
 import shutil
 import subprocess
 import threading
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Tuple
+
+def get_gmt8_now_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """取得台灣時間 (GMT+8) 格式化字串"""
+    tz_gmt8 = timezone(timedelta(hours=8))
+    return datetime.now(tz_gmt8).strftime(fmt)
 
 class ReviewKnowledgeBase:
     """
@@ -125,7 +131,7 @@ class ReviewKnowledgeBase:
     def create_local_backup(self):
         """建立本地自動歷史備份 (最多保留最新 30 份)"""
         try:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            timestamp = get_gmt8_now_str("%Y%m%d_%H%M%S")
             backup_file = os.path.join(self.backup_dir, f"feedback_memory_{timestamp}.json")
             if os.path.exists(self.feedback_memory_path):
                 shutil.copy2(self.feedback_memory_path, backup_file)
@@ -179,11 +185,11 @@ class ReviewKnowledgeBase:
         local_ok = False
         try:
             records = self.load_feedback_memory()
-            timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+            timestamp_str = get_gmt8_now_str("%Y%m%d_%H%M%S")
             entry_id = entry.get("id") or f"KB_{timestamp_str}_{len(records)+1}"
             entry["id"] = entry_id
             if "created_at" not in entry:
-                entry["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                entry["created_at"] = get_gmt8_now_str("%Y-%m-%d %H:%M:%S")
 
             # 處理原始圖檔 / PDF 永久保存
             if source_file_path and os.path.exists(source_file_path):
