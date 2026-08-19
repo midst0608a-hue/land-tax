@@ -3,11 +3,15 @@ import os
 import time
 import math
 import json
+import shutil
 from typing import List, Dict, Any
 
 class ReviewKnowledgeBase:
     """
-    土地登記審查手冊 - 結構化切片與混合檢索 (Structural Chunking & Hybrid Search) 模組
+    土地登記審查手冊與實務防護知識庫模組
+    - 結構化切片與混合檢索 (Structural Chunking & Hybrid Search)
+    - 支援上傳圖檔 (JPG/PNG/WEBP) 與公文 PDF 永久留存於 knowledge_docs/
+    - 支援歷史案件比對與 AI 自主學習提醒
     """
     
     CORE_RULES_DATABASE = [
@@ -86,13 +90,23 @@ class ReviewKnowledgeBase:
     def __init__(self, manual_pdf_path: str = None):
         self.manual_pdf_path = manual_pdf_path
         self.dynamic_chunks = []
-        self.feedback_memory_path = os.path.join(os.path.dirname(__file__), "feedback_memory.json")
+        base_dir = os.path.dirname(__file__)
+        self.feedback_memory_path = os.path.join(base_dir, "feedback_memory.json")
+        self.docs_storage_dir = os.path.join(base_dir, "knowledge_docs")
+        
+        # 確保知識庫實體文件存放資料夾存在
+        if not os.path.exists(self.docs_storage_dir):
+            try:
+                os.makedirs(self.docs_storage_dir, exist_ok=True)
+            except Exception:
+                pass
+
         if manual_pdf_path and os.path.exists(manual_pdf_path):
             self._load_and_chunk_pdf(manual_pdf_path)
 
     def load_feedback_memory(self) -> List[Dict[str, Any]]:
-        """讀取地政事務所實務補正錯題庫經驗檔 (支援 Google Sheets 與 JSON 雙軌)"""
-        # 1. 優先嘗試從 Google Sheets (st.connection 或 st.secrets["gsheets"]) 讀取
+        """讀取地政實務防護知識庫資料 (支援 Google Sheets 與 JSON 雙軌)"""
+        # 1. 優先嘗試從 Google Sheets 讀取
         try:
             import streamlit as st
             if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
@@ -105,7 +119,7 @@ class ReviewKnowledgeBase:
         except Exception:
             pass
 
-        # 2. 備用方案：從本地與 repo 內建之 feedback_memory.json 讀取
+        # 2. 備用方案：從本地 feedback_memory.json 讀取
         if os.path.exists(self.feedback_memory_path):
             try:
                 with open(self.feedback_memory_path, "r", encoding="utf-8") as f:
@@ -114,21 +128,45 @@ class ReviewKnowledgeBase:
                 return []
         return []
 
-    def save_feedback_entry(self, entry: Dict[str, Any]) -> bool:
-        """寫入一筆新的實務補正經驗至 Google Sheets 試算表與 feedback_memory.json"""
+    def save_feedback_entry(self, entry: Dict[str, Any], source_file_path: str = None, original_filename: str = None) -> bool:
+        """
+        寫入一筆新的實務防護經驗至知識庫，並將附件圖檔/PDF 永久保存於 knowledge_docs/ 資料夾
+        """
         local_ok = False
-        # 1. 寫入本地 JSON 備份
         try:
             records = self.load_feedback_memory()
-            entry["id"] = f"FB_{len(records)+1}_{int(time.time())}"
+            timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+            entry_id = entry.get("id") or f"KB_{timestamp_str}_{len(records)+1}"
+            entry["id"] = entry_id
+            if "created_at" not in entry:
+                entry["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+            # 處理原始圖檔 / PDF 永久保存
+            if source_file_path and os.path.exists(source_file_path):
+                orig_name = original_filename or os.path.basename(source_file_path)
+                ext = os.path.splitext(orig_name)[1].lower()
+                safe_name = f"{entry_id}{ext}"
+                target_path = os.path.join(self.docs_storage_dir, safe_name)
+                
+                shutil.copy2(source_file_path, target_path)
+                
+                is_pdf = (ext == ".pdf")
+                entry["attached_file"] = {
+                    "original_name": orig_name,
+                    "stored_filename": safe_name,
+                    "relative_path": os.path.join("knowledge_docs", safe_name),
+                    "file_type": "pdf" if is_pdf else "image",
+                    "file_size": os.path.getsize(target_path)
+                }
+
             records.append(entry)
             with open(self.feedback_memory_path, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
             local_ok = True
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error saving feedback entry: {e}")
 
-        # 2. 嘗試同步寫入 Google Sheets 雲端試算表
+        # 同步嘗試寫入 Google Sheets (若有配置)
         try:
             import streamlit as st
             if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
@@ -136,7 +174,10 @@ class ReviewKnowledgeBase:
                 from streamlit_gsheets import GSheetsConnection
                 conn = st.connection("gsheets", type=GSheetsConnection)
                 existing_df = conn.read(ttl="0s")
-                new_row = pd.DataFrame([entry])
+                sheet_entry = dict(entry)
+                if "attached_file" in sheet_entry and isinstance(sheet_entry["attached_file"], dict):
+                    sheet_entry["attached_file"] = json.dumps(sheet_entry["attached_file"], ensure_ascii=False)
+                new_row = pd.DataFrame([sheet_entry])
                 if existing_df is not None and not existing_df.empty:
                     updated_df = pd.concat([existing_df, new_row], ignore_index=True)
                 else:
@@ -148,8 +189,32 @@ class ReviewKnowledgeBase:
 
         return local_ok
 
+    def delete_feedback_entry(self, entry_id: str) -> bool:
+        """刪除單筆知識庫條目並清理對應保存的圖檔/PDF"""
+        try:
+            records = self.load_feedback_memory()
+            updated_records = []
+            for r in records:
+                if r.get("id") == entry_id:
+                    att = r.get("attached_file")
+                    if att and isinstance(att, dict) and att.get("stored_filename"):
+                        file_path = os.path.join(self.docs_storage_dir, att["stored_filename"])
+                        if os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                            except Exception:
+                                pass
+                else:
+                    updated_records.append(r)
+
+            with open(self.feedback_memory_path, "w", encoding="utf-8") as f:
+                json.dump(updated_records, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
+
     def _load_and_chunk_pdf(self, pdf_path: str):
-        """依據《土地登記審查手冊》的章節與點次進行結構化切片 (Structural Chunking)"""
+        """依據《土地登記審查手冊》的章節與點次進行結構化切片"""
         try:
             import pdfplumber
             with pdfplumber.open(pdf_path) as pdf:
@@ -171,7 +236,7 @@ class ReviewKnowledgeBase:
 
                         # 偵測章節 header
                         chap_match = re.search(r"第[一二三四五六七八九十0-9]+[章節]\s*([^\n]+)", clean_line)
-                        rule_match = re.search(r"(點次\s*\d+[-\d]*|\d+[\.\、]\s*[^\n]+)", clean_line)
+                        rule_match = re.search(r"(點次\s*\d+[-\d]*|\d+[\.\、]\s*([^\n]+))", clean_line)
 
                         if chap_match or rule_match:
                             if buffer_lines:
@@ -211,7 +276,6 @@ class ReviewKnowledgeBase:
                         "statute_ref": f"土地登記審查手冊 P.{len(pdf.pages)}"
                     })
         except Exception:
-            # 發生例外時降級使用內建核心知識庫
             pass
 
     def _detect_registration_types(self, text: str, chapter: str) -> List[str]:
@@ -233,26 +297,28 @@ class ReviewKnowledgeBase:
             types.append("通用")
         return types
 
-    def search_hybrid(self, registration_type: str, keywords: List[str], case_desc: str = "", top_k: int = 4) -> List[Dict[str, Any]]:
+    def search_hybrid(self, registration_type: str, keywords: List[str], case_desc: str = "", top_k: int = 5) -> List[Dict[str, Any]]:
         """
         混合檢索 (Hybrid Search)：
         - Metadata 過濾: matching registration_type
-        - BM25 / 精確關鍵字評分 (70% 權重)
-        - 語意關聯/概念評分 (30% 權重)
-        - 包含實務累積之經驗錯題庫 (feedback_memory.json)
+        - 包含實務累積之自建知識庫 (feedback_memory.json + 留存之圖檔與公文)
+        - BM25 / 精確關鍵字評分
         """
         fb_records = self.load_feedback_memory()
         converted_fb = []
         for fb in fb_records:
+            attached = fb.get("attached_file")
             converted_fb.append({
-                "id": fb.get("id", "FB"),
-                "section_title": f"🛡️ 實務地政防護庫 ({fb.get('office_name', '實務經驗')})",
-                "rule_index": "團隊防護案例",
+                "id": fb.get("id", "KB"),
+                "section_title": "🛡️ 團隊實務防護知識庫 (歷史案例)",
+                "rule_index": "歷史案件經驗",
                 "registration_type": [fb.get("registration_type", "通用")],
-                "title": f"實務補正提醒：{fb.get('title', '補正眉角')}",
+                "title": f"實務防護提醒：{fb.get('title', '補正眉角')}",
                 "content": fb.get("content", ""),
                 "check_points": [fb.get("content", "")],
-                "statute_ref": f"地政事務所實務經驗 ({fb.get('office_name', '實務案例')})"
+                "statute_ref": f"實務留存案例 ({fb.get('created_at', '')})",
+                "is_custom_kb": True,
+                "attached_file": attached
             })
 
         all_pool = list(self.CORE_RULES_DATABASE) + converted_fb + self.dynamic_chunks
@@ -262,7 +328,7 @@ class ReviewKnowledgeBase:
         if case_desc:
             words = re.findall(r"[\u4e00-\u9fa5]{2,6}", case_desc)
             for w in words:
-                if any(kw in w for kw in ["印鑑", "代理", "權利範圍", "持分", "增值稅", "契稅", "繼承", "贈與", "土地", "建物", "抵押權"]):
+                if any(kw in w for kw in ["印鑑", "代理", "權利範圍", "持分", "增值稅", "契稅", "繼承", "贈與", "土地", "建物", "抵押權", "切結", "戶籍", "協議", "簽名", "蓋章"]):
                     query_terms.add(w)
 
         for rule in all_pool:
@@ -275,17 +341,15 @@ class ReviewKnowledgeBase:
             else:
                 score -= 1.5
 
-            # 實務防護經驗加分 (權重 +2.0)
-            if "FB_" in str(rule.get("id", "")):
-                score += 2.5
+            # 自建實務經驗優先加分 (權重 +3.5)
+            if rule.get("is_custom_kb"):
+                score += 3.5
 
-            # 2. 關鍵字精確比對 BM25/Sparse 評分 (70% 語意權重)
+            # 2. 關鍵字精確比對
             rule_text = f"{rule.get('section_title', '')} {rule.get('title', '')} {rule.get('content', '')} {' '.join(rule.get('check_points', []))}"
-            kw_hits = 0
             for term in query_terms:
                 if term in rule_text:
-                    kw_hits += 1
-                    if term in ["印鑑證明", "預告登記", "公設保留地", "地上權", "契稅免稅", "土地增值稅"]:
+                    if term in ["印鑑證明", "預告登記", "公設保留地", "地上權", "契稅免稅", "土地增值稅", "分割協議", "法定代理人"]:
                         score += 3.0
                     else:
                         score += 1.5

@@ -794,57 +794,56 @@ with tab3:
                 else:
                     st.success("✅ 智能預審完成！已為您生成專業送件防護報告。")
 
+                    # 🚨 優先顯示命中之團隊歷史防護案例 (提供圖檔/PDF比對)
+                    if "history_matches" in review_result and review_result["history_matches"]:
+                        st.warning(f"🚨 **【團隊歷史實務防護提醒】** 系統自動比對出 **{len(review_result['history_matches'])}** 筆相關的過往補正與實務經驗，請特別留意：")
+                        for h_idx, h_item in enumerate(review_result["history_matches"], 1):
+                            with st.expander(f"⚠️ 歷史案例 {h_idx}：{h_item.get('title', '')} ({h_item.get('statute_ref', '')})", expanded=True):
+                                st.markdown(f"**💡 實務防護重點**：{h_item.get('content', '')}")
+                                att = h_item.get("attached_file")
+                                if att and isinstance(att, dict):
+                                    rel_path = att.get("relative_path")
+                                    full_att_path = os.path.join(os.path.dirname(__file__), rel_path) if rel_path else None
+                                    if full_att_path and os.path.exists(full_att_path):
+                                        st.markdown(f"**📎 留存附件原件**：`{att.get('original_name', '')}`")
+                                        if att.get("file_type") == "image":
+                                            st.image(full_att_path, caption=f"當時留存之照片/截圖：{att.get('original_name', '')}", use_container_width=True)
+                                        elif att.get("file_type") == "pdf":
+                                            with open(full_att_path, "rb") as pdf_f:
+                                                st.download_button(
+                                                    label=f"📄 下載/檢視當時留存公文 PDF ({att.get('original_name', '')})",
+                                                    data=pdf_f.read(),
+                                                    file_name=att.get('original_name', '公文.pdf'),
+                                                    mime="application/pdf",
+                                                    key=f"dl_matched_{h_idx}_{int(time.time())}"
+                                                )
+
                     # 顯示精準檢索到的手冊條文點次
                     if "retrieved_rules" in review_result and review_result["retrieved_rules"]:
                         with st.expander("📘 本案件精準對照之《土地登記審查手冊》規範點次依據", expanded=False):
                             for r_idx, rule in enumerate(review_result["retrieved_rules"], 1):
-                                st.markdown(f"**【規範點次 {r_idx}】** {rule.get('section_title', '')} - {rule.get('title', '')} (`{rule.get('statute_ref', '')}`)")
-                                st.caption(rule.get('content', ''))
+                                if not rule.get("is_custom_kb"):
+                                    st.markdown(f"**【規範點次 {r_idx}】** {rule.get('section_title', '')} - {rule.get('title', '')} (`{rule.get('statute_ref', '')}`)")
+                                    st.caption(rule.get('content', ''))
 
                     st.markdown("---")
                     st.markdown(review_result["report"])
 
         st.markdown("---")
-        # 新增「隨手拍 ➔ AI 研討 ➔ 自動歸檔錯題庫」互動元件
-        with st.expander("🛡️ 隨手拍/經驗備忘 ➔ AI 研討與自動歸檔防護庫 (Snap & Learn)", expanded=False):
-            st.markdown("當您拿到地政事務所開出的**補正通知單公文**，或者手邊有瑣碎的**實務內規備忘**，請隨手拍照上傳或打字輸入。AI 會自動閱讀解讀，與您研討確認後歸檔至團隊防護庫，讓系統越用越聰明！")
+        
+        # 區塊 1: 「隨手拍 / 實務公文上傳 ➔ AI 解讀歸檔」
+        with st.expander("📸 隨手拍 / 公文圖檔 / 實務筆記 ➔ AI 研討與自動歸檔防護庫 (Snap & Learn)", expanded=False):
+            st.markdown("當您拿到開出的**補正通知單公文 (PDF/照片)**，或者手邊有瑣碎的**實務備忘**，請隨手拍照上傳或打字輸入。AI 會自動解讀提煉，並將**原始檔案永久留存在資料庫**中，日後辦理類似案件時自動為您提醒與比對！")
             
-            # Google Sheets 連線狀態檢查
-            has_gsheets = False
-            try:
-                if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
-                    has_gsheets = True
-            except Exception:
-                pass
-                
-            if has_gsheets:
-                st.success("📊 **防護庫儲存狀態**：✅ 已成功連接您的私人 Google 雲端試算表 (Google Sheets)，所有歸檔經驗將 100% 永久保留且同步寫入！")
-            else:
-                st.info("📁 **防護庫儲存狀態**：目前採用內建持久化檔庫 (`feedback_memory.json`)。欲 100% 寫入您的私人 Google 雲端硬碟試算表，請展開下方教學。")
-                with st.expander("💡 1 分鐘連線您的私人 Google 雲端試算表 (Google Sheets Teaching)", expanded=False):
-                    st.markdown("""
-                    **輕鬆設定 3 步驟**：
-                    1. 開啟您的 [Google Sheets 雲端試算表](https://sheets.google.com)，建立一個新表單，將網址複製下來。
-                    2. 前往 [Streamlit Cloud Dashboard](https://share.streamlit.io/) 點擊 Settings ➔ Secrets。
-                    3. 貼上以下連線設定：
-                    ```toml
-                    [connections.gsheets]
-                    spreadsheet = "https://docs.google.com/spreadsheets/d/您的試算表ID/edit"
-                    type = "streamlit_gsheets.GSheetsConnection"
-                    ```
-                    儲存後即可完成全自動雙向讀寫連線！
-                    """)
-
             fb_col1, fb_col2 = st.columns(2)
             with fb_col1:
-                uploaded_fb_img = st.file_uploader("📸 上傳補正單照片 / 公文 PDF", type=["jpg", "jpeg", "png", "pdf"], key="fb_img_uploader")
-                fb_office = st.text_input("🏛️ 地政機關名稱", value="台北市大安地政事務所", key="fb_office_input")
+                uploaded_fb_img = st.file_uploader("📸 上傳補正單照片 / 公文 PDF", type=["jpg", "jpeg", "png", "webp", "pdf"], key="fb_img_uploader")
             with fb_col2:
-                fb_user_note = st.text_area("📝 (選填) 您的口語筆記或補正說明備忘", placeholder="例如：大安地政櫃台告知，未成年人買賣除法定代理人蓋章外，遺產協議書騎縫章與切結書要特別蓋印鑑章...", height=110, key="fb_note_input")
+                fb_user_note = st.text_area("📝 (選填) 您的口語筆記或補正說明備忘", placeholder="例如：櫃台告知，未成年人買賣除法定代理人蓋章外，遺產協議書騎縫章與切結書要特別蓋印鑑章...", height=110, key="fb_note_input")
 
-            if st.button("🤖 啟動 AI 影像解讀與經驗研討", type="secondary", use_container_width=True):
+            if st.button("🤖 啟動 AI 解讀與經驗研討", type="secondary", use_container_width=True):
                 if uploaded_fb_img is None and not fb_user_note.strip():
-                    st.warning("請至少上傳一張照片或輸入一段文字備忘！")
+                    st.warning("請至少上傳一張照片/PDF 或輸入一段文字備忘！")
                 else:
                     if 'temp_dir' not in st.session_state:
                         st.session_state.temp_dir = tempfile.mkdtemp()
@@ -859,18 +858,19 @@ with tab3:
                         fb_doc_mime = "application/pdf" if fb_ext == "pdf" else f"image/{fb_ext}"
 
                     extractor = GeminiExtractor(api_key=st.session_state.api_key)
-                    with st.spinner("AI 正在閱讀補正照片並進行經驗歸納..."):
+                    with st.spinner("AI 正在閱讀文件並進行經驗歸納..."):
                         fb_res = extractor.process_feedback_analysis(
                             doc_path=fb_doc_path,
                             doc_mime=fb_doc_mime,
-                            user_note=fb_user_note,
-                            office_name=fb_office
+                            user_note=fb_user_note
                         )
                     
                     if "error" in fb_res:
                         st.error(f"❌ 解析失敗：{fb_res['error']}")
                     else:
                         st.session_state.fb_draft = fb_res["analysis"]
+                        st.session_state.fb_upload_path = fb_doc_path
+                        st.session_state.fb_orig_name = uploaded_fb_img.name if uploaded_fb_img else None
                         st.success("✅ AI 已完成閱讀與研討摘要！請確認下方歸檔卡片：")
 
             if "fb_draft" in st.session_state:
@@ -883,12 +883,128 @@ with tab3:
                 
                 if st.button("📥 正式歸檔入團隊實務防護庫", type="primary", use_container_width=True):
                     kb = ReviewKnowledgeBase()
-                    ok = kb.save_feedback_entry(draft)
+                    saved_path = st.session_state.get("fb_upload_path")
+                    orig_name = st.session_state.get("fb_orig_name")
+                    ok = kb.save_feedback_entry(draft, source_file_path=saved_path, original_filename=orig_name)
                     if ok:
-                        st.success("🎉 成功歸檔！此筆經驗已永久納入防護記憶體，下次進行案卷預審時將自動為您提示！")
-                        del st.session_state["fb_draft"]
+                        st.success("🎉 成功歸檔！原始檔案已永久留存於資料庫（knowledge_docs/），下次進行類似案件預審時將自動為您提示與比對！")
+                        if "fb_draft" in st.session_state:
+                            del st.session_state["fb_draft"]
+                        if "fb_upload_path" in st.session_state:
+                            del st.session_state["fb_upload_path"]
+                        if "fb_orig_name" in st.session_state:
+                            del st.session_state["fb_orig_name"]
+                        st.rerun()
                     else:
                         st.error("寫入歸檔檔失敗，請再試一次。")
+
+        # 區塊 2: 「📚 團隊實務防護知識庫 (歷史案例與附件比對庫)」
+        with st.expander("📚 團隊實務防護知識庫 (歷史案例、公文圖檔與比對庫)", expanded=False):
+            kb = ReviewKnowledgeBase()
+            all_records = kb.load_feedback_memory()
+            
+            kb_m1, kb_m2, kb_m3 = st.columns([1.5, 2, 2])
+            with kb_m1:
+                st.metric("📦 已收錄實務經驗", f"{len(all_records)} 筆")
+            with kb_m2:
+                filter_reg = st.selectbox("📂 依登記原因篩選", options=["全部", "買賣", "贈與", "夫妻贈與", "繼承", "抵押權設定", "通用"], key="kb_filter_reg")
+            with kb_m3:
+                search_kw = st.text_input("🔍 搜尋標題/內容關鍵字", placeholder="輸入關鍵字...", key="kb_search_kw")
+
+            filtered_records = []
+            for r in all_records:
+                if filter_reg != "全部" and r.get("registration_type") != filter_reg:
+                    continue
+                if search_kw:
+                    full_str = f"{r.get('title', '')} {r.get('content', '')} {r.get('registration_type', '')}"
+                    if search_kw not in full_str:
+                        continue
+                filtered_records.append(r)
+
+            if not filtered_records:
+                st.info("目前尚無符合條件的實務防護案例。您可以透過上方「📸 隨手拍/公文上傳」或下方「➕ 手動新增」來建立知識庫！")
+            else:
+                for idx, r in enumerate(reversed(filtered_records), 1):
+                    rec_id = r.get("id", f"KB_{idx}")
+                    card_title = f"🏷️ [{r.get('registration_type', '通用')}] {r.get('title', '實務經驗')} ({r.get('created_at', '')})"
+                    with st.container():
+                        st.markdown(f"#### {card_title}")
+                        st.markdown(f"**防護要點與補正規範**：\n{r.get('content', '')}")
+                        
+                        # 附件展示與比對
+                        att = r.get("attached_file")
+                        if att and isinstance(att, dict):
+                            rel_path = att.get("relative_path")
+                            full_path = os.path.join(os.path.dirname(__file__), rel_path) if rel_path else None
+                            if full_path and os.path.exists(full_path):
+                                if att.get("file_type") == "image":
+                                    with st.expander(f"👁️ 查看留存原圖照片 ({att.get('original_name', '')})", expanded=False):
+                                        st.image(full_path, caption=att.get("original_name", "留存照片"), use_container_width=True)
+                                elif att.get("file_type") == "pdf":
+                                    with open(full_path, "rb") as pf:
+                                        st.download_button(
+                                            label=f"📄 下載/檢視留存公文 PDF ({att.get('original_name', '')})",
+                                            data=pf.read(),
+                                            file_name=att.get('original_name', '公文.pdf'),
+                                            mime="application/pdf",
+                                            key=f"dl_card_{rec_id}"
+                                        )
+                        
+                        # 刪除按鈕
+                        del_col1, del_col2 = st.columns([6, 1])
+                        with del_col2:
+                            if st.button("🗑️ 刪除", key=f"del_{rec_id}", type="secondary"):
+                                kb.delete_feedback_entry(rec_id)
+                                st.success("已成功刪除此筆案例！")
+                                st.rerun()
+                        st.markdown("---")
+
+            # 備份與手動新增專區
+            with st.expander("➕ 手動新增文字經驗備忘", expanded=False):
+                manual_title = st.text_input("案例標題", placeholder="例如：大安地政未成年買賣切結規範", key="manual_add_title")
+                manual_reg = st.selectbox("登記原因", options=["買賣", "贈與", "夫妻贈與", "繼承", "抵押權設定", "通用"], key="manual_add_reg")
+                manual_content = st.text_area("實務防護要點說明", placeholder="請輸入詳細補正眉角與預防作法...", key="manual_add_content")
+                if st.button("💾 儲存至知識庫", key="manual_save_btn", type="primary"):
+                    if not manual_title.strip() or not manual_content.strip():
+                        st.warning("請填寫標題與內容！")
+                    else:
+                        new_e = {
+                            "title": manual_title.strip(),
+                            "registration_type": manual_reg,
+                            "content": manual_content.strip()
+                        }
+                        if kb.save_feedback_entry(new_e):
+                            st.success("🎉 手動新增成功！")
+                            st.rerun()
+
+            with st.expander("💾 知識庫備份與匯出/匯入 (JSON)", expanded=False):
+                if all_records:
+                    json_str = json.dumps(all_records, ensure_ascii=False, indent=2)
+                    st.download_button(
+                        label="⬇️ 匯出下載知識庫備份 (JSON)",
+                        data=json_str.encode("utf-8"),
+                        file_name=f"地政實務防護知識庫_{time.strftime('%Y%m%d')}.json",
+                        mime="application/json"
+                    )
+                
+                uploaded_backup = st.file_uploader("📤 匯入歷史知識庫備份檔 (JSON)", type=["json"], key="kb_backup_uploader")
+                if uploaded_backup:
+                    try:
+                        backup_data = json.load(uploaded_backup)
+                        if isinstance(backup_data, list):
+                            if st.button("確認覆蓋/合併匯入備份", type="primary"):
+                                existing_ids = {r.get("id") for r in all_records}
+                                added_count = 0
+                                for item in backup_data:
+                                    if item.get("id") not in existing_ids:
+                                        all_records.append(item)
+                                        added_count += 1
+                                with open(kb.feedback_memory_path, "w", encoding="utf-8") as f:
+                                    json.dump(all_records, f, ensure_ascii=False, indent=2)
+                                st.success(f"🎉 成功匯入 {added_count} 筆新案例！")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"解析備份檔失敗：{e}")
 
 with tab4:
     st.header("✍️ 土地所有權移轉契約書智能生成")

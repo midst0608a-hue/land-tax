@@ -323,12 +323,20 @@ class GeminiExtractor:
                 registration_type=reg_type,
                 keywords=keywords,
                 case_desc=case_desc,
-                top_k=4
+                top_k=5
             )
+
+            history_matches = [c for c in matched_chunks if c.get("is_custom_kb")]
 
             retrieved_rules_str = ""
             for idx, chunk in enumerate(matched_chunks, 1):
-                retrieved_rules_str += f"""
+                if chunk.get("is_custom_kb"):
+                    retrieved_rules_str += f"""
+                【🚨 團隊歷史實務防護案例命中 {idx}】：{chunk.get('title', '')} ({chunk.get('statute_ref', '')})
+                【過去留存之防護要點與補正規範】：{chunk.get('content', '')}
+                """
+                else:
+                    retrieved_rules_str += f"""
                 【規範點次 {idx}】：{chunk.get('section_title', '')} - {chunk.get('title', '')} ({chunk.get('statute_ref', '')})
                 【內容依據】：{chunk.get('content', '')}
                 【核心審查對照點】：{', '.join(chunk.get('check_points', []))}
@@ -346,6 +354,7 @@ class GeminiExtractor:
             - 請將所有發現的差異與缺漏，包裝為「💡 為確保送件順利，建議您覆核以下項目」或「建議加強核對事項」。
             - 請以賦能（Empowerment）與專業協作的語氣呈現，強調這是一份能節省時間、避免多次跑地政事務所的「安全備忘錄」。
             - 每一項提醒，請务必附上我們為您檢索出的《土地登記審查手冊》具體點次或法規條文依據作為權威後盾。
+            - 【歷史實務防護提醒】：若上方檢索結果包含【🚨 團隊歷史實務防護案例命中】，代表過去辦理此類案件曾遭遇過補正要求。請務必在報告最頂端（第 1 點之前）新增一個【🚨 團隊歷史實務經驗防護提示】特別醒目標註與提醒！
 
             【案件萃取資訊】：
             {json.dumps(extracted_data, ensure_ascii=False, indent=2)}
@@ -383,7 +392,8 @@ class GeminiExtractor:
                 "success": True,
                 "report": response_text,
                 "extracted_data": extracted_data,
-                "retrieved_rules": matched_chunks
+                "retrieved_rules": matched_chunks,
+                "history_matches": history_matches
             }
 
         except Exception as e:
@@ -410,9 +420,9 @@ class GeminiExtractor:
                 except Exception:
                     pass
 
-    def process_feedback_analysis(self, doc_path: str = None, doc_mime: str = None, user_note: str = "", office_name: str = "地政事務所"):
+    def process_feedback_analysis(self, doc_path: str = None, doc_mime: str = None, user_note: str = ""):
         """
-        多模態補正單照片 / 口語備忘 AI 分析與歸檔助理
+        多模態補正單照片/PDF公文與實務備忘 AI 分析與歸檔助理
         """
         uploaded_file = None
         temp_ascii = None
@@ -444,28 +454,26 @@ class GeminiExtractor:
                     if "ACTIVE" in state_str:
                         break
                     elif "FAILED" in state_str:
-                        return {"error": f"照片處理失敗 (狀態: {state_str})"}
+                        return {"error": f"檔案處理失敗 (狀態: {state_str})"}
                     time.sleep(2)
 
                 contents.append(file_info)
 
             prompt = f"""
-            你是一個專業的台灣地政經驗知識庫歸檔助理。
-            使用者上傳了一張地政事務所開立的補正通知單照片/文件，或者口述了一段實務補正經驗：
-            【使用者口述/對話備忘】：
+            你是一個專業的台灣地政登記實務經驗與錯題知識庫歸檔助理。
+            使用者上傳了一份補正通知單照片、公文 PDF，或輸入了一段地政登記實務筆記：
+            【使用者筆記備忘】：
             {user_note}
 
-            【機關名稱】：{office_name}
-
             【工作任務】：
-            1. 分析照片與文字中的補正事由、涉及欄位、法規與改善作法。
-            2. 以對話式、極具專業賦能感的語氣摘要這項實務眉角。
-            3. 輸出 JSON 格式供知識庫歸檔：
-            - "title": "簡短的眉角標題（例如：分割繼承協議書騎縫章與印花稅）"
-            - "registration_type": "買賣" / "贈與" / "繼承" / "抵押權設定" / "通用"
-            - "office_name": "{office_name}"
-            - "content": "詳細補正事由與建議作法說明"
-            - "summary_dialogue": "給使用者的互動回覆與確認語句"
+            1. 深入分析照片/公文/筆記中的補正事由、審查重點、登記欄位及防護措施。
+            2. 輸出結構化 JSON，供系統永久存入知識庫並於日後類似案件時提醒使用者：
+            {{
+              "title": "簡短精確的眉角標題（例如：未成年人所有權移轉特別代理人簽章規範）",
+              "registration_type": "買賣" / "贈與" / "夫妻贈與" / "繼承" / "抵押權設定" / "通用",
+              "content": "詳細補正事由、地政審查眉角與日後送件防護作法說明",
+              "summary_dialogue": "溫暖專業的研討摘要回覆（1-2句說明已掌握的重點）"
+            }}
             """
             contents.append(prompt)
 
@@ -485,7 +493,6 @@ class GeminiExtractor:
                     "analysis": {
                         "title": "地政實務補正經驗備忘",
                         "registration_type": "通用",
-                        "office_name": office_name,
                         "content": user_note or response_text[:200],
                         "summary_dialogue": response_text
                     },
