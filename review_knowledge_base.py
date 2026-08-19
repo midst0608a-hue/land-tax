@@ -105,25 +105,13 @@ class ReviewKnowledgeBase:
             self._load_and_chunk_pdf(manual_pdf_path)
 
     def load_feedback_memory(self) -> List[Dict[str, Any]]:
-        """讀取地政實務防護知識庫資料 (支援 Google Sheets 與 JSON 雙軌)"""
-        # 1. 優先嘗試從 Google Sheets 讀取
-        try:
-            import streamlit as st
-            if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
-                from streamlit_gsheets import GSheetsConnection
-                conn = st.connection("gsheets", type=GSheetsConnection)
-                df = conn.read(ttl="10s")
-                if df is not None and not df.empty:
-                    records = df.to_dict(orient="records")
-                    return records
-        except Exception:
-            pass
-
-        # 2. 備用方案：從本地 feedback_memory.json 讀取
+        """讀取地政實務防護知識庫資料 (優先直接從本地 feedback_memory.json 極速讀取，永不卡頓)"""
         if os.path.exists(self.feedback_memory_path):
             try:
                 with open(self.feedback_memory_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return data
             except Exception:
                 return []
         return []
@@ -166,26 +154,7 @@ class ReviewKnowledgeBase:
         except Exception as e:
             print(f"Error saving feedback entry: {e}")
 
-        # 同步嘗試寫入 Google Sheets (若有配置)
-        try:
-            import streamlit as st
-            if hasattr(st, "secrets") and ("gsheets" in st.secrets or "connections" in st.secrets):
-                import pandas as pd
-                from streamlit_gsheets import GSheetsConnection
-                conn = st.connection("gsheets", type=GSheetsConnection)
-                existing_df = conn.read(ttl="0s")
-                sheet_entry = dict(entry)
-                if "attached_file" in sheet_entry and isinstance(sheet_entry["attached_file"], dict):
-                    sheet_entry["attached_file"] = json.dumps(sheet_entry["attached_file"], ensure_ascii=False)
-                new_row = pd.DataFrame([sheet_entry])
-                if existing_df is not None and not existing_df.empty:
-                    updated_df = pd.concat([existing_df, new_row], ignore_index=True)
-                else:
-                    updated_df = new_row
-                conn.update(data=updated_df)
-                return True
-        except Exception:
-            pass
+        # 本地資料庫儲存完成即可快速返回
 
         return local_ok
 
